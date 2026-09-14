@@ -66,6 +66,16 @@ get_ipv6_listen() {
     echo "${v6:-0}"
 }
 
+get_http_redirect() {
+    local enabled=$(uci -q get minigate.global.http_redirect)
+    echo "${enabled:-0}"
+}
+
+get_http_redirect_port() {
+    local port=$(uci -q get minigate.global.http_redirect_port)
+    echo "${port:-2001}"
+}
+
 ensure_default_cert() {
     mkdir -p "$DEFAULT_CERT_DIR"
     [ -f "${DEFAULT_CERT_DIR}/fullchain.pem" ] && [ -f "${DEFAULT_CERT_DIR}/key.pem" ] && return 0
@@ -125,6 +135,35 @@ ensure_default_server() {
     [ -f "$mark" ] && return 0
     : > "$mark"
     write_default_server "${SITES_DIR}/000_default_${key}.conf" "$lport" "$ssl" "$h2s" "$ipv6_listen"
+}
+
+write_redirect_server() {
+    local conf="$1" domain="$2" redirect_port="$3" ipv6_listen="$4"
+
+    cat >> "$conf" <<SEOF
+server {
+    listen ${redirect_port};
+SEOF
+    [ "$ipv6_listen" = "1" ] && echo "    listen [::]:${redirect_port};" >> "$conf"
+    cat >> "$conf" <<SEOF
+    server_name ${domain};
+    return 308 https://${domain}\$request_uri;
+}
+SEOF
+}
+
+redirect_port_in_use() {
+    local redirect_port="$1" type sections sec enabled listen_port
+    for type in proxy proxy_wildcard; do
+        sections=$(uci -q show minigate | grep "=${type}$" | cut -d. -f2 | cut -d= -f1)
+        for sec in $sections; do
+            enabled=$(uci -q get minigate.${sec}.enabled)
+            [ "$enabled" = "1" ] || continue
+            listen_port=$(uci -q get minigate.${sec}.listen_port)
+            [ "${listen_port:-443}" = "$redirect_port" ] && return 0
+        done
+    done
+    return 1
 }
 
 # 写一个完整的 server block（带 proxy_pass），同时支持 IPv6
@@ -203,6 +242,23 @@ generate_sites() {
     local h2s=$(check_h2)
     local idx=0
     local ipv6_listen=$(get_ipv6_listen)
+    local http_redirect=$(get_http_redirect)
+    local redirect_port=$(get_http_redirect_port)
+
+    if [ "$http_redirect" = "1" ]; then
+        case "$redirect_port" in
+            ''|*[!0-9]*) log "HTTP跳转端口无效: $redirect_port"; return 1;;
+        esac
+        [ "$redirect_port" -ge 1 ] 2>/dev/null && [ "$redirect_port" -le 65535 ] 2>/dev/null || {
+            log "HTTP跳转端口超出范围: $redirect_port"
+            return 1
+        }
+        redirect_port_in_use "$redirect_port" && {
+            log "HTTP跳转端口与反向代理端口冲突: $redirect_port"
+            return 1
+        }
+        ensure_default_server "$redirect_port" "0" "$h2s" "$ipv6_listen"
+    fi
 
     # === 通配符域名设置 (proxy_wildcard sections) ===
     local wc_sections=$(uci -q show minigate | grep '=proxy_wildcard$' | cut -d. -f2 | cut -d= -f1)
@@ -235,6 +291,7 @@ generate_sites() {
         idx=$((idx + 1))
         local conf="${SITES_DIR}/site_${idx}.conf"; > "$conf"
         write_server "$conf" "$domain" "$lport" "$taddr" "$tport" "$ssl" "$h2" "$ws" "$h2s" "$ipv6_listen"
+        [ "$http_redirect" = "1" ] && [ "$ssl" = "1" ] && write_redirect_server "$conf" "$domain" "$redirect_port" "$ipv6_listen"
     done
 
     # === 子域名规则：继承通配符主域名设置 ===
@@ -260,6 +317,7 @@ generate_sites() {
         ensure_default_server "$lport" "$ssl" "$h2s" "$ipv6_listen"
         local conf="${SITES_DIR}/site_${idx}.conf"; > "$conf"
         write_server "$conf" "$domain" "$lport" "$taddr" "$tport" "$ssl" "1" "0" "$h2s" "$ipv6_listen"
+        [ "$http_redirect" = "1" ] && [ "$ssl" = "1" ] && write_redirect_server "$conf" "$domain" "$redirect_port" "$ipv6_listen"
     done
 
     rm -f /tmp/minigate_proxy_*.tmp
@@ -286,14 +344,14 @@ do_start() {
     [ -z "$(which nginx 2>/dev/null)" ] && { log "nginx未安装"; return 1; }
     do_stop 2>/dev/null
     sleep 1
-    generate_main_conf; generate_sites
+    generate_main_conf; generate_sites || return 1
     nginx -t -c "$NGINX_CONF" >> "$LOGFILE" 2>&1 || { log "配置错误"; return 1; }
     nginx -c "$NGINX_CONF" >> "$LOGFILE" 2>&1 && log "已启动" || { log "启动失败"; return 1; }
 }
 
 do_reload() {
     if [ -f "$PID_FILE" ] && kill -0 $(cat "$PID_FILE" 2>/dev/null) 2>/dev/null; then
-        generate_main_conf; generate_sites
+        generate_main_conf; generate_sites || return 1
         nginx -t -c "$NGINX_CONF" >> "$LOGFILE" 2>&1 && kill -HUP $(cat "$PID_FILE") && log "已重载"
     else
         do_start

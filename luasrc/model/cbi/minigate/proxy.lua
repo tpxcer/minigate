@@ -26,6 +26,31 @@ uc:foreach("minigate", "ddns", function(sec)
     end
 end)
 
+s = m:section(NamedSection, "global", "global", "HTTP 自动跳转",
+    "为已启用 HTTPS 的代理域名单独监听 HTTP，并跳转到标准 HTTPS 地址。公网使用时还需在上级路由设置 TCP 80 转发到这里配置的端口。")
+s.anonymous = true
+
+o = s:option(Flag, "http_redirect", "启用 HTTP 跳转")
+o.default = "0"
+o.rmempty = false
+
+o = s:option(Value, "http_redirect_port", "内部监听端口")
+o.datatype = "port"
+o.default = "2001"
+o.rmempty = false
+o:depends("http_redirect", "1")
+o.validate = function(self, value, section)
+    local conflict = false
+    uc:foreach("minigate", "proxy_wildcard", function(sec)
+        if sec.enabled == "1" and tostring(sec.listen_port or "443") == value then conflict = true end
+    end)
+    uc:foreach("minigate", "proxy", function(sec)
+        if sec.enabled == "1" and tostring(sec.listen_port or "443") == value then conflict = true end
+    end)
+    if conflict then return nil, "HTTP 跳转端口不能与反向代理监听端口相同" end
+    return value
+end
+
 -- ================================
 -- 通配符域名
 -- ================================

@@ -56,8 +56,8 @@ jobs:
           MiniGate v${VERSION}-${RELEASE}
 
           更新内容：
-          - 修复 FanchmWrt 等 LuCI 主题使用自身深色开关时，MiniGate 仍显示白色卡片和表格的问题。
-          - 页面背景、文字、边框和控件改为跟随 LuCI 主题变量，同时保留系统深色模式兼容。
+          - 新增独立 HTTP 自动跳转入口，可将已配置 HTTPS 域名以 308 重定向到标准 HTTPS 地址。
+          - 未配置的 Host 继续由默认服务器直接拒绝，并阻止 HTTP 跳转端口与反向代理端口冲突。
 
           说明：
           - 旧版 Release 附件不会自动变化，请下载当前版本的 luci-app-minigate_${VERSION}-${RELEASE}_all.ipk。

@@ -5,7 +5,7 @@ ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 OUT_DIR="${1:-$ROOT_DIR/dist}"
 
 PKG_NAME="luci-app-minigate"
-PKG_VERSION="1.3.9"
+PKG_VERSION="1.3.10"
 PKG_RELEASE="1"
 PKG_ARCH="all"
 PKG_FILE="${PKG_NAME}_${PKG_VERSION}-${PKG_RELEASE}_${PKG_ARCH}.ipk"
