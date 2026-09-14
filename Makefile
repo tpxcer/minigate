@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=minigate
-PKG_VERSION:=2026.9.14-3
+PKG_VERSION:=2026.9.14-4
 PKG_RELEASE:=
 PKG_LICENSE:=MIT
 PKG_MAINTAINER:=MiniGate
@@ -49,6 +49,7 @@ define Package/$(PKG_NAME)/install
 	$(INSTALL_BIN) ./root/usr/lib/minigate/geofence.sh $(1)/usr/lib/minigate/
 	$(INSTALL_BIN) ./root/usr/lib/minigate/login_guard.sh $(1)/usr/lib/minigate/
 	$(INSTALL_BIN) ./root/usr/lib/minigate/update.sh $(1)/usr/lib/minigate/
+	$(INSTALL_BIN) ./root/usr/lib/minigate/uninstall.sh $(1)/usr/lib/minigate/
 
 	# Config
 	$(INSTALL_DIR) $(1)/etc/config

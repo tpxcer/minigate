@@ -2,9 +2,9 @@
 
 一个类似 Lucky 的轻量级 OpenWrt 应用，提供四大核心功能：DDNS、SSL 证书、反向代理、登录防护。
 
-当前版本：**v2026.9.14-3**。项目名称、仓库名及 OpenWrt 内部包名均为 **`minigate`**。
+当前版本：**v2026.9.14-4**。项目名称、仓库名及 OpenWrt 内部包名均为 **`minigate`**。
 
-> OpenWrt 用户请从 [Releases](https://github.com/tpxcer/minigate/releases/latest) 下载 `minigate_2026.9.14-3_all.ipk`。不要把 GitHub 自动生成的 `Source code (zip)` / `Source code (tar.gz)` 当安装包上传到 LuCI。
+> OpenWrt 用户请从 [Releases](https://github.com/tpxcer/minigate/releases/latest) 下载 `minigate_2026.9.14-4_all.ipk`。不要把 GitHub 自动生成的 `Source code (zip)` / `Source code (tar.gz)` 当安装包上传到 LuCI。
 
 ## 项目定位
 
@@ -79,6 +79,7 @@ minigate 面向需要自托管轻量网关能力的 OpenWrt / ImmortalWrt 用户
 - 10 分钟内复用成功检查结果；「检查更新」可随时手动重新检查
 - 点击「一键更新」先显示本次 Release 更新内容，确认后才开始安装
 - 安装前校验 SHA-256 并备份程序和配置，安装或服务验证失败时尝试回滚
+- 总览标题区提供「卸载」入口；二次确认默认保留配置、证书、封禁记录和日志，也可主动选择彻底清理
 
 ---
 
@@ -88,20 +89,20 @@ minigate 面向需要自托管轻量网关能力的 OpenWrt / ImmortalWrt 用户
 
 从 [Releases](https://github.com/tpxcer/minigate/releases/latest) 下载：
 
-`minigate_2026.9.14-3_all.ipk`
+`minigate_2026.9.14-4_all.ipk`
 
 **通过 LuCI 界面安装：**
 1. 打开 LuCI → **系统** → **软件包**
 2. 点击 **上传软件包**
-3. 选择 `minigate_2026.9.14-3_all.ipk`，点击安装
+3. 选择 `minigate_2026.9.14-4_all.ipk`，点击安装
 
 **通过命令行安装：**
 
 ```bash
 cd /tmp
-wget -O minigate_2026.9.14-3_all.ipk https://github.com/tpxcer/minigate/releases/download/v2026.9.14-3/minigate_2026.9.14-3_all.ipk
+wget -O minigate_2026.9.14-4_all.ipk https://github.com/tpxcer/minigate/releases/download/v2026.9.14-4/minigate_2026.9.14-4_all.ipk
 opkg update
-opkg install /tmp/minigate_2026.9.14-3_all.ipk
+opkg install /tmp/minigate_2026.9.14-4_all.ipk
 rm -f /tmp/luci-indexcache /tmp/luci-modulecache 2>/dev/null
 /etc/init.d/uhttpd restart
 /etc/init.d/minigate restart
@@ -120,7 +121,7 @@ Release 用的 `.ipk` 请用仓库脚本生成，避免生成 Debian 风格 ar �
 脚本会输出：
 
 ```text
-dist/minigate_2026.9.14-3_all.ipk
+dist/minigate_2026.9.14-4_all.ipk
 ```
 
 该文件外层是 OpenWrt/ImmortalWrt 24.10 兼容的 `tar.gz`，内部成员顺序为 `debian-binary`、`control.tar.gz`、`data.tar.gz`。
@@ -148,7 +149,7 @@ wget -qO- https://raw.githubusercontent.com/tpxcer/minigate/main/scripts/install
 需要指定并核对具体版本时，执行：
 
 ```bash
-d="$(mktemp -d /tmp/minigate.XXXXXX)" && cd "$d" && wget -q https://github.com/tpxcer/minigate/releases/download/v2026.9.14-3/minigate-v2026.9.14-3-src.tar.gz && wget -q https://github.com/tpxcer/minigate/releases/download/v2026.9.14-3/SHA256SUMS && grep 'minigate-v2026.9.14-3-src.tar.gz$' SHA256SUMS | sha256sum -c - && tar xzf minigate-v2026.9.14-3-src.tar.gz && sh install.sh && /etc/init.d/uhttpd restart && /etc/init.d/minigate restart
+d="$(mktemp -d /tmp/minigate.XXXXXX)" && cd "$d" && wget -q https://github.com/tpxcer/minigate/releases/download/v2026.9.14-4/minigate-v2026.9.14-4-src.tar.gz && wget -q https://github.com/tpxcer/minigate/releases/download/v2026.9.14-4/SHA256SUMS && grep 'minigate-v2026.9.14-4-src.tar.gz$' SHA256SUMS | sha256sum -c - && tar xzf minigate-v2026.9.14-4-src.tar.gz && sh install.sh && /etc/init.d/uhttpd restart && /etc/init.d/minigate restart
 ```
 
 其中 `minigate.XXXXXX` 是临时目录模板，系统会自动把六个 `X` 替换为随机字符，避免与已有目录重名。该命令会校验源码包的 SHA-256、保留现有 minigate 配置并重启 LuCI 与 minigate 服务。
@@ -163,14 +164,14 @@ ssh root@192.168.1.1
 
 # 2. 在路由器上直接下载 Release 源码包
 cd /tmp
-wget -O minigate-src.tar.gz https://github.com/tpxcer/minigate/releases/download/v2026.9.14-3/minigate-v2026.9.14-3-src.tar.gz
-wget -O minigate-SHA256SUMS https://github.com/tpxcer/minigate/releases/download/v2026.9.14-3/SHA256SUMS
-awk '$2 == "minigate-v2026.9.14-3-src.tar.gz" {print $1 "  minigate-src.tar.gz"}' minigate-SHA256SUMS | sha256sum -c - || exit 1
+wget -O minigate-src.tar.gz https://github.com/tpxcer/minigate/releases/download/v2026.9.14-4/minigate-v2026.9.14-4-src.tar.gz
+wget -O minigate-SHA256SUMS https://github.com/tpxcer/minigate/releases/download/v2026.9.14-4/SHA256SUMS
+awk '$2 == "minigate-v2026.9.14-4-src.tar.gz" {print $1 "  minigate-src.tar.gz"}' minigate-SHA256SUMS | sha256sum -c - || exit 1
 
 # 3. 解压到独立目录并安装
-mkdir -p /tmp/minigate-v2026.9.14-3
-tar xzf minigate-src.tar.gz -C /tmp/minigate-v2026.9.14-3
-cd /tmp/minigate-v2026.9.14-3
+mkdir -p /tmp/minigate-v2026.9.14-4
+tar xzf minigate-src.tar.gz -C /tmp/minigate-v2026.9.14-4
+cd /tmp/minigate-v2026.9.14-4
 sh install.sh
 
 # 4. 启动服务
@@ -220,7 +221,7 @@ SSH 登录后执行上方「方法 2」的一条命令，保留原有配置并�
 ### IPK 升级
 
 ```bash
-opkg install --force-reinstall /tmp/minigate_2026.9.14-3_all.ipk
+opkg install --force-reinstall /tmp/minigate_2026.9.14-4_all.ipk
 rm -f /tmp/luci-indexcache /tmp/luci-modulecache 2>/dev/null
 /etc/init.d/minigate restart
 ```
@@ -237,70 +238,45 @@ rm -f /tmp/luci-indexcache /tmp/luci-modulecache 2>/dev/null
 
 ## 卸载方法
 
-### 方式 1：保留配置卸载（推荐）
+### 方式 1：LuCI 一键卸载（推荐）
+
+进入 **服务 → minigate → 总览**，点击标题右侧的「卸载」：
+
+1. 阅读中断提示并确认卸载范围
+2. 默认不勾选数据清理，保留 `/etc/config/minigate`、证书、封禁记录和日志
+3. 只有确认不再使用时，才勾选「同时删除配置、证书、封禁记录和日志」
+4. 点击「确认卸载」后，页面会返回 LuCI 服务列表
+
+卸载会立即停止 minigate 的 DDNS、证书续期、反向代理和登录防护。请从 LAN 或 SSH 登录 LuCI 后操作，避免通过 minigate 自身的公网反向代理入口执行。
+
+### 方式 2：命令行保留配置卸载
 
 适合以后还可能重装 minigate 的情况。此方式会删除 LuCI 页面、脚本和服务文件，但保留 `/etc/config/minigate` 以及 `/etc/minigate/` 下的证书、封禁记录等数据。
 
 ```sh
-/etc/init.d/minigate stop 2>/dev/null
-/etc/init.d/minigate disable 2>/dev/null
-
-# opkg 系统
-opkg remove minigate 2>/dev/null
-
-# apk 系统（OpenWrt 25.xx / ImmortalWrt 25.xx）
-apk del minigate 2>/dev/null
-
-/etc/init.d/uhttpd restart
+/bin/sh /usr/lib/minigate/uninstall.sh 0
 ```
 
-如果你是早期源码安装，包管理器没有记录这个软件包，可以按下面这些明确路径逐项清理程序文件：
+脚本会自动识别源码安装、`opkg` 和 `apk`，清理程序、LuCI 页面、cron、运行进程及临时状态，并刷新 LuCI。
+
+如果你是早期版本，尚未包含 `uninstall.sh`，可以使用包管理器卸载：
 
 ```sh
 /etc/init.d/minigate stop 2>/dev/null
 /etc/init.d/minigate disable 2>/dev/null
-
-rm -f /etc/init.d/minigate
-rm -f /usr/lib/lua/luci/controller/minigate.lua
-rm -f /usr/lib/lua/luci/model/cbi/minigate/general.lua
-rm -f /usr/lib/lua/luci/model/cbi/minigate/ddns.lua
-rm -f /usr/lib/lua/luci/model/cbi/minigate/acme.lua
-rm -f /usr/lib/lua/luci/model/cbi/minigate/proxy.lua
-rm -f /usr/lib/lua/luci/model/cbi/minigate/login_guard.lua
-rm -f /usr/lib/lua/luci/view/minigate/log.htm
-rm -f /usr/lib/minigate/ddns.sh
-rm -f /usr/lib/minigate/acme.sh
-rm -f /usr/lib/minigate/proxy.sh
-rm -f /usr/lib/minigate/geofence.sh
-rm -f /usr/lib/minigate/login_guard.sh
-rm -f /tmp/luci-indexcache /tmp/luci-modulecache 2>/dev/null
+opkg remove minigate 2>/dev/null || apk del minigate 2>/dev/null
 /etc/init.d/uhttpd restart
 ```
 
-### 方式 2：完整卸载并清理配置
+源码安装且没有包管理器记录的旧版本，建议先覆盖安装最新版，再使用 LuCI 或上面的统一卸载脚本，不要手工复制不完整的删除清单。
+
+### 方式 3：命令行彻底卸载
 
 确认不再使用 minigate 时再执行。此方式会删除配置、证书记录、登录防护封禁记录和日志。
 
 ```sh
-/etc/init.d/minigate stop 2>/dev/null
-/etc/init.d/minigate disable 2>/dev/null
-opkg remove minigate 2>/dev/null
-apk del minigate 2>/dev/null
-
-rm -f /etc/config/minigate
-rm -f /etc/minigate/login-guard/bans.txt
-rm -f /var/log/minigate-ddns.log
-rm -f /var/log/minigate-acme.log
-rm -f /var/log/minigate-proxy.log
-rm -f /var/log/minigate-login-guard.log
-rm -f /var/log/minigate-access.log
-sed -i '/minigate/d' /etc/crontabs/root 2>/dev/null
-/etc/init.d/cron restart 2>/dev/null
-rm -f /tmp/luci-indexcache /tmp/luci-modulecache 2>/dev/null
-/etc/init.d/uhttpd restart
+/bin/sh /usr/lib/minigate/uninstall.sh 1
 ```
-
-> 说明：如果目录里还有文件，`rmdir` 不会删除目录；这是刻意保守处理，避免误删证书或其他数据。需要彻底删除空目录时，可确认内容后再执行：`rmdir /etc/minigate/login-guard /etc/minigate 2>/dev/null`。
 
 ---
 
@@ -392,6 +368,11 @@ minigate/
 - `nftables` - 登录防护用（OpenWrt 22.03+ / ImmortalWrt 默认已装）
 
 ## 更新日志
+
+### v2026.9.14-4
+- 总览标题区新增「卸载」按钮，适配桌面、手机和深浅色主题
+- 卸载前必须二次确认，默认保留配置、证书、封禁记录和日志
+- 可主动选择彻底清理；统一兼容源码安装、opkg 和 apk 包安装
 
 ### v2026.9.14-3
 - 新增 `curl -fsSL https://raw.githubusercontent.com/tpxcer/minigate/main/scripts/install.sh | sh` 短命令安装

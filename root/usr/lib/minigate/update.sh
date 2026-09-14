@@ -3,7 +3,7 @@
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 
-CURRENT_VERSION="2026.9.14-3"
+CURRENT_VERSION="2026.9.14-4"
 REPOSITORY="tpxcer/minigate"
 API_URL="https://api.github.com/repos/${REPOSITORY}/releases/latest"
 DOWNLOAD_ROOT="https://github.com/${REPOSITORY}/releases/download"

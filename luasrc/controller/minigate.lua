@@ -64,6 +64,7 @@ function index()
     entry({"admin","services","minigate","update_auto"}, call("action_update_auto")).leaf=true
     entry({"admin","services","minigate","update_check"}, call("action_update_check")).leaf=true
     entry({"admin","services","minigate","update_apply"}, post("action_update_apply")).leaf=true
+    entry({"admin","services","minigate","uninstall"}, post("action_uninstall")).leaf=true
 end
 
 function action_update_status()
@@ -103,6 +104,34 @@ function action_update_apply()
     luci.http.write_json({
         success = ok,
         message = ok and "更新任务已启动" or "无法启动更新任务"
+    })
+end
+
+function action_uninstall()
+    local sys = require "luci.sys"
+    local fs = require "nixio.fs"
+    local confirm = luci.http.formvalue("confirm")
+    local purge = luci.http.formvalue("purge")
+    local ok = false
+
+    if confirm ~= "uninstall-minigate" or (purge ~= "0" and purge ~= "1") then
+        luci.http.status(400, "Bad Request")
+        luci.http.prepare_content("application/json")
+        luci.http.write_json({success = false, message = "卸载确认无效，请重新操作"})
+        return
+    end
+
+    if fs.access("/usr/lib/minigate/uninstall.sh") then
+        ok = sys.call("runner=$(mktemp /tmp/minigate-uninstall.XXXXXX)" ..
+            " && cp /usr/lib/minigate/uninstall.sh \"$runner\" && chmod 700 \"$runner\"" ..
+            " && ( ( sleep 1; /bin/sh \"$runner\" " .. shellquote(purge) ..
+            "; rm -f \"$runner\" ) >/dev/null 2>&1 & )") == 0
+    end
+
+    luci.http.prepare_content("application/json")
+    luci.http.write_json({
+        success = ok,
+        message = ok and "卸载任务已启动" or "无法启动卸载任务"
     })
 end
 
