@@ -343,6 +343,7 @@ generate_sites() {
         local prefix=$(uci -q get minigate.${sec}.prefix)
         local taddr=$(uci -q get minigate.${sec}.target_addr)
         local tport=$(uci -q get minigate.${sec}.target_port); tport=${tport:-80}
+        local ws=$(uci -q get minigate.${sec}.websocket); ws=${ws:-0}
         [ -z "$parent" ] || [ -z "$prefix" ] || [ -z "$taddr" ] && continue
 
         local domain="${prefix}.${parent}"
@@ -364,7 +365,7 @@ generate_sites() {
         fi
         ensure_default_server "$lport" "$ssl" "$h2s" "$ipv6_listen" "$mux"
         local conf="${SITES_DIR}/site_${idx}.conf"; > "$conf"
-        write_server "$conf" "$domain" "$lport" "$taddr" "$tport" "$ssl" "1" "0" "$h2s" "$ipv6_listen" "$mux"
+        write_server "$conf" "$domain" "$lport" "$taddr" "$tport" "$ssl" "1" "$ws" "$h2s" "$ipv6_listen" "$mux"
         [ "$mux" = "1" ] && write_redirect_server "$conf" "$domain" "$lport"
     done
 
