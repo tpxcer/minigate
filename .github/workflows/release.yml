@@ -73,8 +73,8 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           test -s "releases/${tag}.md"
 
-      - name: Test updater
-        run: node --test tests/update.test.cjs
+      - name: Test updater and online installer
+        run: node --test tests/install.test.cjs tests/update.test.cjs
 
       - name: Build IPK
         shell: bash

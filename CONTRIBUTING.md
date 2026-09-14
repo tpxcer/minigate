@@ -35,7 +35,7 @@ date has no suffix; further releases use `-1`, `-2`, and so on. Tags start with
 Update `PKG_VERSION` in `Makefile` and `scripts/build-ipk.sh`, and
 `CURRENT_VERSION` in `root/usr/lib/minigate/update.sh` together. Add the actual
 release notes in `releases/v<VERSION>.md` and update README download examples.
-Run `node --test tests/update.test.cjs` before pushing a commit containing
+Run `node --test tests/install.test.cjs tests/update.test.cjs` before pushing a commit containing
 `[release]` to `main`. The workflow validates the date, next sequence, and
 matching versions before building and publishing.
 
