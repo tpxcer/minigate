@@ -43,7 +43,11 @@ function backend(body, options = {}) {
         API_URL=https://example.invalid/latest
         ${functions}
         jsonfilter() { "$NODE" "$TEST_DIR/jsonfilter.cjs" "$@"; }
-        flock() { test "\${FLOCK_BUSY:-0}" = 0; }
+        flock() {
+            printf '%s\n' "$*" >> "$TEST_DIR/flocks"
+            [ "$1" = "-u" ] && return 0
+            test "\${FLOCK_BUSY:-0}" = 0
+        }
         download_file() {
             printf 'fetch\\n' >> "$TEST_DIR/fetches"
             test "\${FETCH_FAIL:-0}" = 0 || return 1
@@ -55,7 +59,8 @@ function backend(body, options = {}) {
     return {
         ...result,
         state: fs.existsSync(path.join(dir, 'state.json')) ? JSON.parse(fs.readFileSync(path.join(dir, 'state.json'))) : null,
-        fetches: fs.existsSync(path.join(dir, 'fetches')) ? fs.readFileSync(path.join(dir, 'fetches'), 'utf8').trim().split('\n').length : 0
+        fetches: fs.existsSync(path.join(dir, 'fetches')) ? fs.readFileSync(path.join(dir, 'fetches'), 'utf8').trim().split('\n').length : 0,
+        flocks: fs.existsSync(path.join(dir, 'flocks')) ? fs.readFileSync(path.join(dir, 'flocks'), 'utf8').trim().split('\n') : []
     };
 }
 
@@ -109,6 +114,19 @@ test('busy updater is reported without downloading or starting another update', 
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.state.status, 'installing');
     assert.equal(result.fetches, 0);
+});
+
+test('apply releases its lock even when the locked operation returns early', () => {
+    const result = backend('run_apply_locked() { return 7; }; run_apply "$CURRENT_VERSION"');
+    assert.equal(result.status, 7, result.stderr);
+    assert.deepEqual(result.flocks, ['-n 9', '-u 9']);
+});
+
+test('long-running services are started with the update lock descriptor closed', () => {
+    const installer = fs.readFileSync(path.join(root, 'install.sh'), 'utf8');
+    assert.match(installer, /\/etc\/init\.d\/minigate start 9>&-/);
+    assert.match(source, /\/etc\/init\.d\/minigate start >> "\$RUN_LOG" 2>&1 9>&-/);
+    assert.equal((source.match(/\/etc\/init\.d\/uhttpd restart >> "\$RUN_LOG" 2>&1 9>&-/g) || []).length, 2);
 });
 
 test('network failure is recoverable and never starts installation', () => {

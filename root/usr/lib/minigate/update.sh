@@ -3,7 +3,7 @@
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 
-CURRENT_VERSION="2026.9.14-1"
+CURRENT_VERSION="2026.9.14-2"
 REPOSITORY="tpxcer/minigate"
 API_URL="https://api.github.com/repos/${REPOSITORY}/releases/latest"
 DOWNLOAD_ROOT="https://github.com/${REPOSITORY}/releases/download"
@@ -181,8 +181,8 @@ restore_program() {
     tar -xzf "$backup" -C / >> "$RUN_LOG" 2>&1 || return 1
     chmod +x /etc/init.d/minigate /usr/lib/minigate/*.sh 2>/dev/null || true
     rm -f /tmp/luci-indexcache /tmp/luci-modulecache
-    /etc/init.d/minigate start >> "$RUN_LOG" 2>&1 || true
-    /etc/init.d/uhttpd restart >> "$RUN_LOG" 2>&1 || true
+    /etc/init.d/minigate start >> "$RUN_LOG" 2>&1 9>&- || true
+    /etc/init.d/uhttpd restart >> "$RUN_LOG" 2>&1 9>&- || true
 
     if [ "$(uci -q get minigate.global.enabled)" = "1" ]; then
         local pid
@@ -207,16 +207,9 @@ verify_install() {
     return 0
 }
 
-run_apply() {
+run_apply_locked() {
     local work_dir source_name source_file sums_file expected actual valid_hash backup
     local confirmed_version="$1"
-
-    mkdir -p "$TMP_ROOT" "$(dirname "$LOCK_FILE")"
-    exec 9>"$LOCK_FILE" || return 1
-    if ! flock -n 9; then
-        [ -s "$STATE_FILE" ] || write_state "busy" 0 "" false true false "已有更新任务正在运行"
-        return 2
-    fi
 
     if ! valid_version "$confirmed_version"; then
         write_state "error" 0 "" false false false "请先检查更新并确认本次更新内容"
@@ -326,11 +319,29 @@ run_apply() {
     fi
 
     rm -f /tmp/luci-indexcache /tmp/luci-modulecache
-    /etc/init.d/uhttpd restart >> "$RUN_LOG" 2>&1 || true
+    /etc/init.d/uhttpd restart >> "$RUN_LOG" 2>&1 9>&- || true
     STATE_CURRENT="$LATEST_VERSION"
     write_state "success" 100 "$LATEST_VERSION" false false true "更新成功，服务已恢复"
     rm -rf "$work_dir"
     return 0
+}
+
+run_apply() {
+    local result
+
+    mkdir -p "$TMP_ROOT" "$(dirname "$LOCK_FILE")"
+    exec 9>"$LOCK_FILE" || return 1
+    if ! flock -n 9; then
+        [ -s "$STATE_FILE" ] || write_state "busy" 0 "" false true false "已有更新任务正在运行"
+        exec 9>&-
+        return 2
+    fi
+
+    run_apply_locked "$1"
+    result=$?
+    flock -u 9 2>/dev/null || true
+    exec 9>&-
+    return "$result"
 }
 
 case "${1:-status}" in

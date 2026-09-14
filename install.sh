@@ -65,7 +65,7 @@ cp "$D"/luasrc/model/cbi/minigate/*.lua /usr/lib/lua/luci/model/cbi/minigate/
 cp "$D"/luasrc/view/minigate/*.htm /usr/lib/lua/luci/view/minigate/
 rm -rf /tmp/luci-* 2>/dev/null
 /etc/init.d/minigate enable 2>/dev/null
-/etc/init.d/minigate start 2>/dev/null || true
+/etc/init.d/minigate start 9>&- 2>/dev/null || true
 echo ""; echo "==== 安装完成 ===="
 echo "LuCI -> 服务 -> MiniGate"
 echo "登录防护 tab 默认关闭，到 LuCI 启用即可。"
