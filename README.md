@@ -122,6 +122,16 @@ dist/luci-app-minigate_1.3.11-1_all.ipk
 
 适用于 **OpenWrt 25.xx（apk）**、**OpenWrt 24.xx 及以下（opkg）** 以及 **ImmortalWrt**。
 
+**已经通过 SSH 登录软路由后，执行以下一条命令即可安装：**
+
+```bash
+d="$(mktemp -d /tmp/minigate.XXXXXX)" && cd "$d" && wget -q https://github.com/tpxcer/luci-app-minigate/releases/download/v1.3.11/luci-app-minigate-v1.3.11-src.tar.gz && wget -q https://github.com/tpxcer/luci-app-minigate/releases/download/v1.3.11/SHA256SUMS && grep 'luci-app-minigate-v1.3.11-src.tar.gz$' SHA256SUMS | sha256sum -c - && tar xzf luci-app-minigate-v1.3.11-src.tar.gz && sh install.sh && /etc/init.d/uhttpd restart && /etc/init.d/minigate restart
+```
+
+其中 `minigate.XXXXXX` 是临时目录模板，系统会自动把六个 `X` 替换为随机字符，避免与已有目录重名。该命令会校验源码包的 SHA-256、保留现有 MiniGate 配置并重启 LuCI 与 MiniGate 服务。
+
+**分步安装：**
+
 ```bash
 # 1. SSH 到路由器
 ssh root@192.168.1.1
