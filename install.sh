@@ -4,13 +4,17 @@ D="$(cd "$(dirname "$0")" && pwd)"
 echo ""; echo "==== MiniGate 安装 ===="; echo ""
 [ "$(id -u)" = "0" ] || { echo "[!] 需要root"; exit 1; }
 
-# 检测包管理器 + 安装依赖（含 nftables，登录防护需要）
+# 检测包管理器 + 安装依赖（stream 用于同端口 HTTP/HTTPS 识别）
 if command -v opkg >/dev/null 2>&1; then
     PKG="opkg"
-    for p in curl jsonfilter nftables; do opkg list-installed 2>/dev/null|grep -q "^${p} "||{ opkg update 2>/dev/null;opkg install "$p" 2>/dev/null; }; done
+    for p in curl jsonfilter nftables nginx-mod-stream; do
+        opkg list-installed 2>/dev/null | grep -q "^${p} " || { opkg update 2>/dev/null; opkg install "$p" 2>/dev/null; }
+    done
 elif command -v apk >/dev/null 2>&1; then
     PKG="apk"
-    for p in curl jsonfilter nftables; do apk info -e "$p" >/dev/null 2>&1 || apk add "$p" 2>/dev/null; done
+    for p in curl jsonfilter nftables nginx-mod-stream; do
+        apk info -e "$p" >/dev/null 2>&1 || apk add "$p" 2>/dev/null
+    done
 fi
 
 [ -f /etc/init.d/minigate ] && /etc/init.d/minigate stop 2>/dev/null || true
@@ -30,7 +34,7 @@ fi
 }
 
 mkdir -p /usr/lib/minigate
-mkdir -p /etc/minigate/acme /etc/minigate/certs /etc/minigate/nginx/sites /etc/minigate/login-guard
+mkdir -p /etc/minigate/acme /etc/minigate/certs /etc/minigate/nginx/sites /etc/minigate/nginx/streams /etc/minigate/login-guard
 cp "$D"/root/usr/lib/minigate/*.sh /usr/lib/minigate/; chmod +x /usr/lib/minigate/*.sh
 cp "$D"/root/etc/init.d/minigate /etc/init.d/; chmod +x /etc/init.d/minigate
 
@@ -48,6 +52,10 @@ EOF
 else
     cp "$D"/root/etc/config/minigate /etc/config/
 fi
+
+# v1.3.11 起由每条 HTTPS 规则的监听端口直接承担 HTTP 跳转。
+uci -q delete minigate.global.http_redirect_port 2>/dev/null || true
+uci -q commit minigate 2>/dev/null || true
 
 mkdir -p /usr/lib/lua/luci/controller
 mkdir -p /usr/lib/lua/luci/model/cbi/minigate

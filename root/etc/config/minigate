@@ -2,7 +2,6 @@ config global 'global'
 	option enabled '0'
 	option ipv6_listen '0'
 	option http_redirect '0'
-	option http_redirect_port '2001'
 
 config acme 'acme'
 	option enabled '0'

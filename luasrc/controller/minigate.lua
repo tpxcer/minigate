@@ -5,6 +5,27 @@ local function shellquote(value)
     return "'" .. value:gsub("'", "'\"'\"'") .. "'"
 end
 
+local function update_response(command)
+    local sys = require "luci.sys"
+    local jsonc = require "luci.jsonc"
+    local raw = sys.exec("/bin/sh /usr/lib/minigate/update.sh " .. command .. " 2>/dev/null") or ""
+    local ok, data = pcall(jsonc.parse, raw)
+    if not ok or type(data) ~= "table" then
+        data = {
+            status = "error",
+            progress = 0,
+            current = "",
+            latest = "",
+            available = false,
+            running = false,
+            success = false,
+            message = "更新服务返回了无效结果"
+        }
+    end
+    luci.http.prepare_content("application/json")
+    luci.http.write_json(data)
+end
+
 function index()
     entry({"admin","services","minigate"}, alias("admin","services","minigate","general"), "MiniGate", 60).dependent=false
     entry({"admin","services","minigate","general"}, cbi("minigate/general"), "总览", 10)
@@ -24,6 +45,36 @@ function index()
     entry({"admin","services","minigate","lg_ban"}, call("action_lg_ban")).leaf=true
     entry({"admin","services","minigate","lg_unban"}, call("action_lg_unban")).leaf=true
     entry({"admin","services","minigate","lg_flush"}, call("action_lg_flush")).leaf=true
+    entry({"admin","services","minigate","update_status"}, call("action_update_status")).leaf=true
+    entry({"admin","services","minigate","update_check"}, call("action_update_check")).leaf=true
+    entry({"admin","services","minigate","update_apply"}, post("action_update_apply")).leaf=true
+end
+
+function action_update_status()
+    update_response("status")
+end
+
+function action_update_check()
+    update_response("check")
+end
+
+function action_update_apply()
+    local sys = require "luci.sys"
+    local fs = require "nixio.fs"
+    local runner = "/tmp/minigate-update-run.sh"
+    local ok = false
+
+    if fs.access("/usr/lib/minigate/update.sh") then
+        ok = sys.call("cp /usr/lib/minigate/update.sh " .. runner ..
+            " && chmod 700 " .. runner ..
+            " && (/bin/sh " .. runner .. " apply >/dev/null 2>&1 &)") == 0
+    end
+
+    luci.http.prepare_content("application/json")
+    luci.http.write_json({
+        success = ok,
+        message = ok and "更新任务已启动" or "无法启动更新任务"
+    })
 end
 
 function action_status()

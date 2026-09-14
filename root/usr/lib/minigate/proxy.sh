@@ -1,20 +1,47 @@
 #!/bin/sh
-NGINX_CONF="/etc/minigate/nginx/minigate.conf"
-SITES_DIR="/etc/minigate/nginx/sites"
-CERT_DIR="/etc/minigate/certs"
-DEFAULT_CERT_DIR="/etc/minigate/certs/_default"
-LOGFILE="/var/log/minigate-proxy.log"
-PID_FILE="/var/run/minigate-nginx.pid"
+NGINX_CONF="${MINIGATE_NGINX_CONF:-/etc/minigate/nginx/minigate.conf}"
+SITES_DIR="${MINIGATE_SITES_DIR:-/etc/minigate/nginx/sites}"
+STREAMS_DIR="${MINIGATE_STREAMS_DIR:-/etc/minigate/nginx/streams}"
+CERT_DIR="${MINIGATE_CERT_DIR:-/etc/minigate/certs}"
+DEFAULT_CERT_DIR="${MINIGATE_DEFAULT_CERT_DIR:-${CERT_DIR}/_default}"
+LOGFILE="${MINIGATE_LOGFILE:-/var/log/minigate-proxy.log}"
+PID_FILE="${MINIGATE_PID_FILE:-/var/run/minigate-nginx.pid}"
+NGINX_ERROR_LOG="${MINIGATE_NGINX_ERROR_LOG:-/var/log/minigate-nginx-error.log}"
+ACCESS_LOG="${MINIGATE_ACCESS_LOG:-/var/log/minigate-access.log}"
+SOCKET_DIR="${MINIGATE_SOCKET_DIR:-/var/run/minigate}"
+STREAM_MODULE="${MINIGATE_STREAM_MODULE:-/usr/lib/nginx/modules/ngx_stream_module.so}"
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [PROXY] $*" >> "$LOGFILE"; }
 
 generate_main_conf() {
-    mkdir -p "$(dirname $NGINX_CONF)" "$SITES_DIR"
-    cat > "$NGINX_CONF" <<'EOF'
+    local http_redirect=$(get_http_redirect)
+    local use_stream=0
+    mkdir -p "$(dirname "$NGINX_CONF")" "$SITES_DIR" "$STREAMS_DIR" "$SOCKET_DIR"
+
+    if [ "$http_redirect" = "1" ] && ls "$STREAMS_DIR"/*.conf >/dev/null 2>&1; then
+        use_stream=1
+    fi
+    if [ "$use_stream" = "1" ] && [ ! -f "$STREAM_MODULE" ]; then
+        log "同端口HTTP跳转需要 nginx-mod-stream"
+        return 1
+    fi
+
+    : > "$NGINX_CONF"
+    [ "$use_stream" = "1" ] && echo "load_module ${STREAM_MODULE};" >> "$NGINX_CONF"
+    cat >> "$NGINX_CONF" <<EOF
 worker_processes auto;
-pid /var/run/minigate-nginx.pid;
-error_log /var/log/minigate-nginx-error.log warn;
+pid ${PID_FILE};
+error_log ${NGINX_ERROR_LOG} warn;
 events { worker_connections 512; }
+EOF
+    if [ "$use_stream" = "1" ]; then
+        cat >> "$NGINX_CONF" <<EOF
+stream {
+    include ${STREAMS_DIR}/*.conf;
+}
+EOF
+    fi
+    cat >> "$NGINX_CONF" <<'EOF'
 http {
     include /etc/nginx/mime.types;
     default_type application/octet-stream;
@@ -24,18 +51,24 @@ http {
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_prefer_server_ciphers off;
     ssl_session_cache shared:SSL:10m;
+    map $proxy_protocol_addr $minigate_client_addr {
+        default $proxy_protocol_addr;
+        "" $remote_addr;
+    }
     log_format minigate_json escape=json
         '{"time":"$time_iso8601",'
         '"domain":"$server_name",'
-        '"client":"$remote_addr",'
+        '"client":"$minigate_client_addr",'
         '"method":"$request_method",'
         '"uri":"$request_uri",'
         '"status":$status,'
         '"size":$body_bytes_sent,'
         '"referer":"$http_referer",'
         '"ua":"$http_user_agent"}';
-    access_log /var/log/minigate-access.log minigate_json;
-    include /etc/minigate/nginx/sites/*.conf;
+EOF
+    echo "    access_log ${ACCESS_LOG} minigate_json;" >> "$NGINX_CONF"
+    echo "    include ${SITES_DIR}/*.conf;" >> "$NGINX_CONF"
+    cat >> "$NGINX_CONF" <<'EOF'
 }
 EOF
 }
@@ -71,11 +104,6 @@ get_http_redirect() {
     echo "${enabled:-0}"
 }
 
-get_http_redirect_port() {
-    local port=$(uci -q get minigate.global.http_redirect_port)
-    echo "${port:-2001}"
-}
-
 ensure_default_cert() {
     mkdir -p "$DEFAULT_CERT_DIR"
     [ -f "${DEFAULT_CERT_DIR}/fullchain.pem" ] && [ -f "${DEFAULT_CERT_DIR}/key.pem" ] && return 0
@@ -86,13 +114,21 @@ ensure_default_cert() {
 }
 
 write_default_server() {
-    local conf="$1" lport="$2" ssl="$3" h2s="$4" ipv6_listen="$5"
+    local conf="$1" lport="$2" ssl="$3" h2s="$4" ipv6_listen="$5" mux="$6"
     local ll="listen ${lport} default_server"
     local ll6=""
     local ex=""
 
-    [ "$ssl" = "1" ] && ll="${ll} ssl"
-    if [ "$ipv6_listen" = "1" ]; then
+    if [ "$mux" = "1" ]; then
+        if [ "$ssl" = "1" ]; then
+            ll="listen unix:${SOCKET_DIR}/https_${lport}.sock default_server ssl proxy_protocol"
+        else
+            ll="listen unix:${SOCKET_DIR}/http_${lport}.sock default_server proxy_protocol"
+        fi
+    elif [ "$ssl" = "1" ]; then
+        ll="${ll} ssl"
+    fi
+    if [ "$mux" != "1" ] && [ "$ipv6_listen" = "1" ]; then
         ll6="listen [::]:${lport} default_server"
         [ "$ssl" = "1" ] && ll6="${ll6} ssl"
     fi
@@ -129,41 +165,50 @@ SEOF
 }
 
 ensure_default_server() {
-    local lport="$1" ssl="$2" h2s="$3" ipv6_listen="$4"
-    local key=$(echo "${lport}_${ssl}" | tr -c 'A-Za-z0-9_' '_')
+    local lport="$1" ssl="$2" h2s="$3" ipv6_listen="$4" mux="$5"
+    local key=$(echo "${lport}_${ssl}_${mux}" | tr -c 'A-Za-z0-9_' '_')
     local mark="/tmp/minigate_default_${key}.tmp"
     [ -f "$mark" ] && return 0
     : > "$mark"
-    write_default_server "${SITES_DIR}/000_default_${key}.conf" "$lport" "$ssl" "$h2s" "$ipv6_listen"
+    write_default_server "${SITES_DIR}/000_default_${key}.conf" "$lport" "$ssl" "$h2s" "$ipv6_listen" "$mux"
 }
 
 write_redirect_server() {
-    local conf="$1" domain="$2" redirect_port="$3" ipv6_listen="$4"
+    local conf="$1" domain="$2" lport="$3"
+    local authority="$domain"
+    [ "$lport" = "443" ] || authority="${domain}:${lport}"
 
     cat >> "$conf" <<SEOF
 server {
-    listen ${redirect_port};
-SEOF
-    [ "$ipv6_listen" = "1" ] && echo "    listen [::]:${redirect_port};" >> "$conf"
-    cat >> "$conf" <<SEOF
+    listen unix:${SOCKET_DIR}/http_${lport}.sock proxy_protocol;
     server_name ${domain};
-    return 308 https://${domain}\$request_uri;
+    return 308 https://${authority}\$request_uri;
 }
 SEOF
 }
 
-redirect_port_in_use() {
-    local redirect_port="$1" type sections sec enabled listen_port
-    for type in proxy proxy_wildcard; do
-        sections=$(uci -q show minigate | grep "=${type}$" | cut -d. -f2 | cut -d= -f1)
-        for sec in $sections; do
-            enabled=$(uci -q get minigate.${sec}.enabled)
-            [ "$enabled" = "1" ] || continue
-            listen_port=$(uci -q get minigate.${sec}.listen_port)
-            [ "${listen_port:-443}" = "$redirect_port" ] && return 0
-        done
-    done
-    return 1
+ensure_stream_server() {
+    local lport="$1" ipv6_listen="$2"
+    local mark="/tmp/minigate_stream_${lport}.tmp"
+    local conf="${STREAMS_DIR}/stream_${lport}.conf"
+    [ -f "$mark" ] && return 0
+    : > "$mark"
+
+    cat > "$conf" <<SEOF
+map \$ssl_preread_protocol \$minigate_backend_${lport} {
+    "" unix:${SOCKET_DIR}/http_${lport}.sock;
+    default unix:${SOCKET_DIR}/https_${lport}.sock;
+}
+server {
+    listen ${lport};
+SEOF
+    [ "$ipv6_listen" = "1" ] && echo "    listen [::]:${lport};" >> "$conf"
+    cat >> "$conf" <<SEOF
+    ssl_preread on;
+    proxy_protocol on;
+    proxy_pass \$minigate_backend_${lport};
+}
+SEOF
 }
 
 # 写一个完整的 server block（带 proxy_pass），同时支持 IPv6
@@ -171,14 +216,19 @@ write_server() {
     local conf="$1" domain="$2" lport="$3" taddr="$4" tport="$5" ssl="$6" h2="$7" ws="$8" h2s="$9"
     shift 9
     local ipv6_listen="${1:-0}"
+    local mux="${2:-0}"
 
     log "生成: $domain:${lport} -> ${taddr}:${tport} (ipv6=$ipv6_listen)"
 
     local ll="listen ${lport}"; local ll6=""; local ex=""
-    [ "$ssl" = "1" ] && ll="${ll} ssl"
+    if [ "$mux" = "1" ]; then
+        ll="listen unix:${SOCKET_DIR}/https_${lport}.sock ssl proxy_protocol"
+    elif [ "$ssl" = "1" ]; then
+        ll="${ll} ssl"
+    fi
 
     # IPv6 listen
-    if [ "$ipv6_listen" = "1" ]; then
+    if [ "$mux" != "1" ] && [ "$ipv6_listen" = "1" ]; then
         ll6="listen [::]:${lport}"
         [ "$ssl" = "1" ] && ll6="${ll6} ssl"
     fi
@@ -223,8 +273,8 @@ SEOF
         }
         proxy_pass http://${target_host}:${tport};
         proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Real-IP \$minigate_client_addr;
+        proxy_set_header X-Forwarded-For \$minigate_client_addr;
         proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_http_version 1.1;
         proxy_read_timeout 300s;
@@ -238,27 +288,13 @@ SEOF
 }
 
 generate_sites() {
+    mkdir -p "$SITES_DIR" "$STREAMS_DIR" "$SOCKET_DIR"
     rm -f "$SITES_DIR"/*.conf
+    rm -f "$STREAMS_DIR"/*.conf
     local h2s=$(check_h2)
     local idx=0
     local ipv6_listen=$(get_ipv6_listen)
     local http_redirect=$(get_http_redirect)
-    local redirect_port=$(get_http_redirect_port)
-
-    if [ "$http_redirect" = "1" ]; then
-        case "$redirect_port" in
-            ''|*[!0-9]*) log "HTTP跳转端口无效: $redirect_port"; return 1;;
-        esac
-        [ "$redirect_port" -ge 1 ] 2>/dev/null && [ "$redirect_port" -le 65535 ] 2>/dev/null || {
-            log "HTTP跳转端口超出范围: $redirect_port"
-            return 1
-        }
-        redirect_port_in_use "$redirect_port" && {
-            log "HTTP跳转端口与反向代理端口冲突: $redirect_port"
-            return 1
-        }
-        ensure_default_server "$redirect_port" "0" "$h2s" "$ipv6_listen"
-    fi
 
     # === 通配符域名设置 (proxy_wildcard sections) ===
     local wc_sections=$(uci -q show minigate | grep '=proxy_wildcard$' | cut -d. -f2 | cut -d= -f1)
@@ -287,11 +323,17 @@ generate_sites() {
         local h2=$(uci -q get minigate.${sec}.http2); h2=${h2:-1}
         local ws=$(uci -q get minigate.${sec}.websocket); ws=${ws:-0}
         [ -z "$domain" ] || [ -z "$taddr" ] && continue
-        ensure_default_server "$lport" "$ssl" "$h2s" "$ipv6_listen"
+        local mux=0
+        if [ "$http_redirect" = "1" ] && [ "$ssl" = "1" ]; then
+            mux=1
+            ensure_stream_server "$lport" "$ipv6_listen"
+            ensure_default_server "$lport" "0" "$h2s" "$ipv6_listen" "1"
+        fi
+        ensure_default_server "$lport" "$ssl" "$h2s" "$ipv6_listen" "$mux"
         idx=$((idx + 1))
         local conf="${SITES_DIR}/site_${idx}.conf"; > "$conf"
-        write_server "$conf" "$domain" "$lport" "$taddr" "$tport" "$ssl" "$h2" "$ws" "$h2s" "$ipv6_listen"
-        [ "$http_redirect" = "1" ] && [ "$ssl" = "1" ] && write_redirect_server "$conf" "$domain" "$redirect_port" "$ipv6_listen"
+        write_server "$conf" "$domain" "$lport" "$taddr" "$tport" "$ssl" "$h2" "$ws" "$h2s" "$ipv6_listen" "$mux"
+        [ "$mux" = "1" ] && write_redirect_server "$conf" "$domain" "$lport"
     done
 
     # === 子域名规则：继承通配符主域名设置 ===
@@ -314,14 +356,21 @@ generate_sites() {
         fi
 
         idx=$((idx + 1))
-        ensure_default_server "$lport" "$ssl" "$h2s" "$ipv6_listen"
+        local mux=0
+        if [ "$http_redirect" = "1" ] && [ "$ssl" = "1" ]; then
+            mux=1
+            ensure_stream_server "$lport" "$ipv6_listen"
+            ensure_default_server "$lport" "0" "$h2s" "$ipv6_listen" "1"
+        fi
+        ensure_default_server "$lport" "$ssl" "$h2s" "$ipv6_listen" "$mux"
         local conf="${SITES_DIR}/site_${idx}.conf"; > "$conf"
-        write_server "$conf" "$domain" "$lport" "$taddr" "$tport" "$ssl" "1" "0" "$h2s" "$ipv6_listen"
-        [ "$http_redirect" = "1" ] && [ "$ssl" = "1" ] && write_redirect_server "$conf" "$domain" "$redirect_port" "$ipv6_listen"
+        write_server "$conf" "$domain" "$lport" "$taddr" "$tport" "$ssl" "1" "0" "$h2s" "$ipv6_listen" "$mux"
+        [ "$mux" = "1" ] && write_redirect_server "$conf" "$domain" "$lport"
     done
 
     rm -f /tmp/minigate_proxy_*.tmp
     rm -f /tmp/minigate_default_*.tmp
+    rm -f /tmp/minigate_stream_*.tmp
 }
 
 do_stop() {
@@ -336,26 +385,51 @@ do_stop() {
             kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null
         fi
         rm -f "$PID_FILE"
+        rm -f "$SOCKET_DIR"/*.sock
         log "已停止"
     fi
 }
 
-do_start() {
-    [ -z "$(which nginx 2>/dev/null)" ] && { log "nginx未安装"; return 1; }
+prepare_config() {
+    generate_sites || return 1
+    generate_main_conf || return 1
+    nginx -t -c "$NGINX_CONF" >> "$LOGFILE" 2>&1 || { log "配置错误"; return 1; }
+}
+
+start_prepared() {
     do_stop 2>/dev/null
     sleep 1
-    generate_main_conf; generate_sites || return 1
-    nginx -t -c "$NGINX_CONF" >> "$LOGFILE" 2>&1 || { log "配置错误"; return 1; }
+    mkdir -p "$SOCKET_DIR"
+    rm -f "$SOCKET_DIR"/*.sock
     nginx -c "$NGINX_CONF" >> "$LOGFILE" 2>&1 && log "已启动" || { log "启动失败"; return 1; }
 }
 
+do_start() {
+    [ -z "$(which nginx 2>/dev/null)" ] && { log "nginx未安装"; return 1; }
+    prepare_config || return 1
+    start_prepared
+}
+
 do_reload() {
+    local old_mux=0 new_mux=0
+    grep -q '^stream {' "$NGINX_CONF" 2>/dev/null && old_mux=1
+    prepare_config || return 1
+    grep -q '^stream {' "$NGINX_CONF" 2>/dev/null && new_mux=1
     if [ -f "$PID_FILE" ] && kill -0 $(cat "$PID_FILE" 2>/dev/null) 2>/dev/null; then
-        generate_main_conf; generate_sites || return 1
-        nginx -t -c "$NGINX_CONF" >> "$LOGFILE" 2>&1 && kill -HUP $(cat "$PID_FILE") && log "已重载"
+        if [ "$old_mux" != "$new_mux" ]; then
+            start_prepared
+        else
+            kill -HUP $(cat "$PID_FILE") && log "已重载"
+        fi
     else
-        do_start
+        start_prepared
     fi
 }
 
-case "$1" in start) do_start;; stop) do_stop;; reload) do_reload;; *) echo "用法: $0 {start|stop|reload}";; esac
+case "$1" in
+    start) do_start ;;
+    stop) do_stop ;;
+    reload) do_reload ;;
+    test) prepare_config ;;
+    *) echo "用法: $0 {start|stop|reload|test}" ;;
+esac

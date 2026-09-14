@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-minigate
-PKG_VERSION:=1.3.10
+PKG_VERSION:=1.3.11
 PKG_RELEASE:=1
 PKG_LICENSE:=MIT
 PKG_MAINTAINER:=MiniGate
@@ -13,7 +13,7 @@ define Package/$(PKG_NAME)
 	CATEGORY:=LuCI
 	SUBMENU:=3. Applications
 	TITLE:=LuCI - MiniGate (DDNS + ACME + Reverse Proxy + Login Guard)
-	DEPENDS:=+luci-base +nginx-ssl +openssl-util +wget +curl +jsonfilter +coreutils-stat +nftables
+	DEPENDS:=+luci-base +nginx-ssl +nginx-mod-stream +openssl-util +wget +curl +jsonfilter +coreutils-stat +nftables
 	PKGARCH:=all
 endef
 
@@ -44,6 +44,7 @@ define Package/$(PKG_NAME)/install
 	$(INSTALL_BIN) ./root/usr/lib/minigate/acme.sh $(1)/usr/lib/minigate/
 	$(INSTALL_BIN) ./root/usr/lib/minigate/proxy.sh $(1)/usr/lib/minigate/
 	$(INSTALL_BIN) ./root/usr/lib/minigate/login_guard.sh $(1)/usr/lib/minigate/
+	$(INSTALL_BIN) ./root/usr/lib/minigate/update.sh $(1)/usr/lib/minigate/
 
 	# Config
 	$(INSTALL_DIR) $(1)/etc/config
@@ -58,6 +59,7 @@ define Package/$(PKG_NAME)/install
 	$(INSTALL_DIR) $(1)/etc/minigate/certs
 	$(INSTALL_DIR) $(1)/etc/minigate/nginx
 	$(INSTALL_DIR) $(1)/etc/minigate/nginx/sites
+	$(INSTALL_DIR) $(1)/etc/minigate/nginx/streams
 	$(INSTALL_DIR) $(1)/etc/minigate/login-guard
 
 	# i18n / translations

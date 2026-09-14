@@ -56,8 +56,9 @@ jobs:
           MiniGate v${VERSION}-${RELEASE}
 
           更新内容：
-          - 新增独立 HTTP 自动跳转入口，可将已配置 HTTPS 域名以 308 重定向到标准 HTTPS 地址。
-          - 未配置的 Host 继续由默认服务器直接拒绝，并阻止 HTTP 跳转端口与反向代理端口冲突。
+          - 已启用 HTTPS 的任意监听端口可自动识别 HTTP 请求，并以 308 跳转到同域名、同端口的 HTTPS。
+          - LuCI 总览新增检查更新和一键更新，下载固定 GitHub Release 资产并执行 SHA-256 校验、备份和失败回滚。
+          - 未配置的 Host 继续由默认服务器直接拒绝，真实访客 IP 通过协议分流后仍保留。
 
           说明：
           - 旧版 Release 附件不会自动变化，请下载当前版本的 luci-app-minigate_${VERSION}-${RELEASE}_all.ipk。

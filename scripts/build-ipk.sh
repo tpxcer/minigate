@@ -5,11 +5,11 @@ ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 OUT_DIR="${1:-$ROOT_DIR/dist}"
 
 PKG_NAME="luci-app-minigate"
-PKG_VERSION="1.3.10"
+PKG_VERSION="1.3.11"
 PKG_RELEASE="1"
 PKG_ARCH="all"
 PKG_FILE="${PKG_NAME}_${PKG_VERSION}-${PKG_RELEASE}_${PKG_ARCH}.ipk"
-DEPS="libc, luci-base, nginx-ssl, openssl-util, wget, curl, jsonfilter, coreutils-stat, nftables"
+DEPS="libc, luci-base, nginx-ssl, nginx-mod-stream, openssl-util, wget, curl, jsonfilter, coreutils-stat, nftables"
 
 WORK_DIR="$(mktemp -d)"
 
@@ -29,6 +29,7 @@ mkdir -p \
 	"$DATA_DIR/etc/minigate/acme" \
 	"$DATA_DIR/etc/minigate/certs" \
 	"$DATA_DIR/etc/minigate/nginx/sites" \
+	"$DATA_DIR/etc/minigate/nginx/streams" \
 	"$DATA_DIR/etc/minigate/login-guard"
 
 install -m 0644 "$ROOT_DIR/luasrc/controller/minigate.lua" "$DATA_DIR/usr/lib/lua/luci/controller/minigate.lua"
