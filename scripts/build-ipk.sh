@@ -4,11 +4,10 @@ set -eu
 ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 OUT_DIR="${1:-$ROOT_DIR/dist}"
 
-PKG_NAME="luci-app-minigate"
-PKG_VERSION="1.3.11"
-PKG_RELEASE="1"
+PKG_NAME="minigate"
+PKG_VERSION="2026.9.14"
 PKG_ARCH="all"
-PKG_FILE="${PKG_NAME}_${PKG_VERSION}-${PKG_RELEASE}_${PKG_ARCH}.ipk"
+PKG_FILE="${PKG_NAME}_${PKG_VERSION}_${PKG_ARCH}.ipk"
 DEPS="libc, luci-base, nginx-ssl, nginx-mod-stream, openssl-util, wget, curl, jsonfilter, coreutils-stat, nftables"
 
 WORK_DIR="$(mktemp -d)"
@@ -46,7 +45,10 @@ fi
 
 cat > "$CONTROL_DIR/control" <<EOF
 Package: $PKG_NAME
-Version: $PKG_VERSION-$PKG_RELEASE
+Version: $PKG_VERSION
+Provides: luci-app-minigate
+Conflicts: luci-app-minigate
+Replaces: luci-app-minigate
 Depends: $DEPS
 Source: feeds/luci/applications/$PKG_NAME
 SourceName: $PKG_NAME

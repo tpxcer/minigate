@@ -1,14 +1,14 @@
-# MiniGate - OpenWrt 轻量网关管理
+# minigate - OpenWrt 轻量网关管理
 
 一个类似 Lucky 的轻量级 OpenWrt 应用，提供四大核心功能：DDNS、SSL 证书、反向代理、登录防护。
 
-当前版本：**v1.3.11**
+当前版本：**v2026.9.14**。项目名称、仓库名及 OpenWrt 内部包名均为 **`minigate`**。
 
-> OpenWrt 用户请从 [Releases](https://github.com/tpxcer/luci-app-minigate/releases/latest) 下载 `luci-app-minigate_1.3.11-1_all.ipk`。不要把 GitHub 自动生成的 `Source code (zip)` / `Source code (tar.gz)` 当安装包上传到 LuCI。
+> OpenWrt 用户请从 [Releases](https://github.com/tpxcer/minigate/releases/latest) 下载 `minigate_2026.9.14_all.ipk`。不要把 GitHub 自动生成的 `Source code (zip)` / `Source code (tar.gz)` 当安装包上传到 LuCI。
 
 ## 项目定位
 
-MiniGate 面向需要自托管轻量网关能力的 OpenWrt / ImmortalWrt 用户，目标是在 LuCI 中集中完成域名解析、证书签发、反向代理和登录防护配置，减少在路由器上手动维护多组脚本、Nginx 配置和防火墙规则的成本。
+minigate 面向需要自托管轻量网关能力的 OpenWrt / ImmortalWrt 用户，目标是在 LuCI 中集中完成域名解析、证书签发、反向代理和登录防护配置，减少在路由器上手动维护多组脚本、Nginx 配置和防火墙规则的成本。
 
 项目重点关注以下场景：
 
@@ -23,6 +23,7 @@ MiniGate 面向需要自托管轻量网关能力的 OpenWrt / ImmortalWrt 用户
 - 维护者：[@tpxcer](https://github.com/tpxcer)
 - 当前维护分支：`main`
 - 发布方式：GitHub Releases 提供源码包和 OpenWrt/ImmortalWrt 兼容安装包
+- 版本规则：按北京时间（Asia/Shanghai）发布日期使用 `年.月.日`；同日首版无后缀，后续版本依次追加 `-1`、`-2`，例如 `2026.9.14`、`2026.9.14-1`。标签加 `v` 前缀。
 - 安全策略：见 [SECURITY.md](SECURITY.md)
 - 贡献说明：见 [CONTRIBUTING.md](CONTRIBUTING.md)
 - 许可证：MIT License
@@ -73,28 +74,34 @@ MiniGate 面向需要自托管轻量网关能力的 OpenWrt / ImmortalWrt 用户
 - 5 分钟内有访问记为「在线」（绿点），否则「离线」（灰点）
 - IP 归属地后端查询（ip9.com.cn → ip-api.com → pconline 多源回退）
 
+### 软件更新
+- 登录 LuCI 后打开 **服务 → minigate → 总览**，自动检查 GitHub 最新正式版；不会自动下载或安装
+- 10 分钟内复用成功检查结果；「检查更新」可随时手动重新检查
+- 点击「一键更新」先显示本次 Release 更新内容，确认后才开始安装
+- 安装前校验 SHA-256 并备份程序和配置，安装或服务验证失败时尝试回滚
+
 ---
 
 ## 安装方法
 
 ### 方法 1：IPK 安装（推荐，OpenWrt / ImmortalWrt opkg 版本）
 
-从 [Releases](https://github.com/tpxcer/luci-app-minigate/releases/latest) 下载：
+从 [Releases](https://github.com/tpxcer/minigate/releases/latest) 下载：
 
-`luci-app-minigate_1.3.11-1_all.ipk`
+`minigate_2026.9.14_all.ipk`
 
 **通过 LuCI 界面安装：**
 1. 打开 LuCI → **系统** → **软件包**
 2. 点击 **上传软件包**
-3. 选择 `luci-app-minigate_1.3.11-1_all.ipk`，点击安装
+3. 选择 `minigate_2026.9.14_all.ipk`，点击安装
 
 **通过命令行安装：**
 
 ```bash
 cd /tmp
-wget -O luci-app-minigate_1.3.11-1_all.ipk https://github.com/tpxcer/luci-app-minigate/releases/download/v1.3.11/luci-app-minigate_1.3.11-1_all.ipk
+wget -O minigate_2026.9.14_all.ipk https://github.com/tpxcer/minigate/releases/download/v2026.9.14/minigate_2026.9.14_all.ipk
 opkg update
-opkg install /tmp/luci-app-minigate_1.3.11-1_all.ipk
+opkg install /tmp/minigate_2026.9.14_all.ipk
 rm -f /tmp/luci-indexcache /tmp/luci-modulecache 2>/dev/null
 /etc/init.d/uhttpd restart
 /etc/init.d/minigate restart
@@ -113,22 +120,24 @@ Release 用的 `.ipk` 请用仓库脚本生成，避免生成 Debian 风格 ar �
 脚本会输出：
 
 ```text
-dist/luci-app-minigate_1.3.11-1_all.ipk
+dist/minigate_2026.9.14_all.ipk
 ```
 
 该文件外层是 OpenWrt/ImmortalWrt 24.10 兼容的 `tar.gz`，内部成员顺序为 `debian-binary`、`control.tar.gz`、`data.tar.gz`。
 
-### 方法 2：命令行直接拉取源码安装（适用所有版本）
+### 方法 2：命令行直接拉取源码安装（opkg / apk）
 
-适用于 **OpenWrt 25.xx（apk）**、**OpenWrt 24.xx 及以下（opkg）** 以及 **ImmortalWrt**。
+适用于使用 **apk** 或 **opkg** 的 OpenWrt / ImmortalWrt。请先确认 LuCI、Nginx SSL 等下列依赖可用，且软件源与当前固件和架构匹配；不要为了安装混用其他固件的软件源。
 
 **已经通过 SSH 登录软路由后，执行以下一条命令即可安装：**
 
 ```bash
-d="$(mktemp -d /tmp/minigate.XXXXXX)" && cd "$d" && wget -q https://github.com/tpxcer/luci-app-minigate/releases/download/v1.3.11/luci-app-minigate-v1.3.11-src.tar.gz && wget -q https://github.com/tpxcer/luci-app-minigate/releases/download/v1.3.11/SHA256SUMS && grep 'luci-app-minigate-v1.3.11-src.tar.gz$' SHA256SUMS | sha256sum -c - && tar xzf luci-app-minigate-v1.3.11-src.tar.gz && sh install.sh && /etc/init.d/uhttpd restart && /etc/init.d/minigate restart
+d="$(mktemp -d /tmp/minigate.XXXXXX)" && cd "$d" && wget -q https://github.com/tpxcer/minigate/releases/download/v2026.9.14/minigate-v2026.9.14-src.tar.gz && wget -q https://github.com/tpxcer/minigate/releases/download/v2026.9.14/SHA256SUMS && grep 'minigate-v2026.9.14-src.tar.gz$' SHA256SUMS | sha256sum -c - && tar xzf minigate-v2026.9.14-src.tar.gz && sh install.sh && /etc/init.d/uhttpd restart && /etc/init.d/minigate restart
 ```
 
-其中 `minigate.XXXXXX` 是临时目录模板，系统会自动把六个 `X` 替换为随机字符，避免与已有目录重名。该命令会校验源码包的 SHA-256、保留现有 MiniGate 配置并重启 LuCI 与 MiniGate 服务。
+其中 `minigate.XXXXXX` 是临时目录模板，系统会自动把六个 `X` 替换为随机字符，避免与已有目录重名。该命令会校验源码包的 SHA-256、保留现有 minigate 配置并重启 LuCI 与 minigate 服务。
+
+源码安装直接写入程序文件，不向 opkg/apk 注册软件包；希望软件包列表中显示 `minigate`，请使用 IPK 或匹配 SDK 编译的 APK。旧名包用户先阅读下方「旧包名迁移」。
 
 **分步安装：**
 
@@ -138,18 +147,20 @@ ssh root@192.168.1.1
 
 # 2. 在路由器上直接下载 Release 源码包
 cd /tmp
-wget -O minigate-src.tar.gz https://github.com/tpxcer/luci-app-minigate/releases/download/v1.3.11/luci-app-minigate-v1.3.11-src.tar.gz
+wget -O minigate-src.tar.gz https://github.com/tpxcer/minigate/releases/download/v2026.9.14/minigate-v2026.9.14-src.tar.gz
+wget -O minigate-SHA256SUMS https://github.com/tpxcer/minigate/releases/download/v2026.9.14/SHA256SUMS
+awk '$2 == "minigate-v2026.9.14-src.tar.gz" {print $1 "  minigate-src.tar.gz"}' minigate-SHA256SUMS | sha256sum -c - || exit 1
 
 # 3. 解压到独立目录并安装
-mkdir -p /tmp/minigate-v1.3.11
-tar xzf minigate-src.tar.gz -C /tmp/minigate-v1.3.11
-cd /tmp/minigate-v1.3.11
+mkdir -p /tmp/minigate-v2026.9.14
+tar xzf minigate-src.tar.gz -C /tmp/minigate-v2026.9.14
+cd /tmp/minigate-v2026.9.14
 sh install.sh
 
 # 4. 启动服务
 /etc/init.d/minigate restart
 
-# 5. 访问 LuCI → 服务 → MiniGate
+# 5. 访问 LuCI → 服务 → minigate
 ```
 
 ### 方法 3：OpenWrt SDK 编译（适用所有版本，含 APK）
@@ -158,51 +169,53 @@ sh install.sh
 
 ```bash
 # 将源码放入 SDK 的 package 目录
-cp -r luci-app-minigate ~/openwrt/package/
+cp -r minigate ~/openwrt/package/
 
 # 编译
 cd ~/openwrt
-make package/luci-app-minigate/compile V=s
+make package/minigate/compile V=s
 
 # 生成的 ipk 或 apk 在 bin/packages/ 目录下
 ```
+
+APK 的内部版本格式要求将同日序号 `-N` 写为 `-rN`，SDK 会自动转换；例如发布版 `2026.9.14-1` 对应 APK 版本 `2026.9.14-r1`。网页、Release 标签和 IPK 仍使用 `2026.9.14-1`，包名均为 `minigate`。
 
 ---
 
 ## 升级方法
 
-### LuCI 一键更新（v1.3.11 起）
+### LuCI 一键更新
 
-进入 **服务 → MiniGate → 总览 → 软件更新**：
+进入 **服务 → minigate → 总览 → 软件更新**：
 
-1. 点击「检查更新」获取 GitHub 最新正式版
-2. 有新版本时点击「一键更新」
-3. 页面会显示下载、SHA-256 校验、备份、安装和服务验证进度
+1. 打开总览时自动检查，也可以点击「检查更新」立即重新检查
+2. 有新版本时点击「一键更新」，弹出该版本的更新内容
+3. 阅读后点击「确认更新」才开始；取消或关闭弹窗不会安装
+4. 页面显示下载、SHA-256 校验、备份、安装和服务验证进度，成功后刷新
 
-更新器只接受 `tpxcer/luci-app-minigate` 的固定 Release 资产，不接受自定义下载地址。更新前会备份程序和 `/etc/config/minigate`；安装或服务验证失败时自动恢复原版本。第一次从 v1.3.10 或更早版本升级到 v1.3.11，仍需使用下面的源码或 IPK 方法；之后即可在 LuCI 中一键更新。
+更新器只接受 `tpxcer/minigate` 的固定 Release 资产，不接受自定义下载地址。自动检查只在打开 minigate 总览时触发，不会修改全局 LuCI 登录流程。确认后若最新版本已经变化，会停止并要求重新查看更新内容。更新前会备份程序和 `/etc/config/minigate`；安装或服务验证失败时尝试恢复原版本，失败详情见 `/var/log/minigate-update.log`。
+
+`v1.3.11` 已有一键更新，但需先升级本版才具备自动检查和说明弹窗。本版保留旧名源码附件用于兼容它；旧版不能识别 `2026.9.14-1` 这样的后缀版本，应先升级 `v2026.9.14` 或使用本文命令手动安装。更早版本需手动安装。
 
 ### 源码升级（通用）
 
-```bash
-ssh root@192.168.1.1
-cd /tmp
-wget -O minigate-src.tar.gz https://github.com/tpxcer/luci-app-minigate/releases/download/v1.3.11/luci-app-minigate-v1.3.11-src.tar.gz
-mkdir -p /tmp/minigate-v1.3.11
-tar xzf minigate-src.tar.gz -C /tmp/minigate-v1.3.11
-cd /tmp/minigate-v1.3.11
-sh install.sh
-/etc/init.d/minigate restart
-```
+SSH 登录后执行上方「方法 2」的一条命令，保留原有配置并校验下载内容。网页一键更新也采用源码覆盖方式，不会同步修改 opkg/apk 数据库中的包名或版本；包管理器安装的用户建议继续使用对应软件包升级。
 
 ### IPK 升级
 
 ```bash
-opkg install --force-reinstall /tmp/luci-app-minigate_1.3.11-1_all.ipk
+opkg install --force-reinstall /tmp/minigate_2026.9.14_all.ipk
 rm -f /tmp/luci-indexcache /tmp/luci-modulecache 2>/dev/null
 /etc/init.d/minigate restart
 ```
 
 配置文件 `/etc/config/minigate` 会自动保留。
+
+### 旧包名迁移
+
+如果 `opkg list-installed` 或 `apk info` 中仍有 `luci-app-minigate`，它是旧版内部包名，不等于新包 `minigate`。先备份 `/etc/config/minigate` 和 `/etc/minigate/`，并提前下载新安装包和旧版本回退包，再移除旧名包并安装新包。请在 LAN 或 SSH 连接下操作，迁移会短暂中断由 minigate 提供的反向代理。
+
+新 IPK 声明旧包的兼容/替换关系，但不同固件的自动替换行为仍需实机验证；不要使用 `--force-overwrite` 混装，不要在新文件写入后再卸载旧名包，以免旧包把同路径的新文件一并删除。源码安装的用户若没有旧包数据库记录，无需迁移。
 
 ---
 
@@ -210,17 +223,17 @@ rm -f /tmp/luci-indexcache /tmp/luci-modulecache 2>/dev/null
 
 ### 方式 1：保留配置卸载（推荐）
 
-适合以后还可能重装 MiniGate 的情况。此方式会删除 LuCI 页面、脚本和服务文件，但保留 `/etc/config/minigate` 以及 `/etc/minigate/` 下的证书、封禁记录等数据。
+适合以后还可能重装 minigate 的情况。此方式会删除 LuCI 页面、脚本和服务文件，但保留 `/etc/config/minigate` 以及 `/etc/minigate/` 下的证书、封禁记录等数据。
 
 ```sh
 /etc/init.d/minigate stop 2>/dev/null
 /etc/init.d/minigate disable 2>/dev/null
 
 # opkg 系统
-opkg remove luci-app-minigate --force-depends 2>/dev/null
+opkg remove minigate 2>/dev/null
 
 # apk 系统（OpenWrt 25.xx / ImmortalWrt 25.xx）
-apk del luci-app-minigate 2>/dev/null
+apk del minigate 2>/dev/null
 
 /etc/init.d/uhttpd restart
 ```
@@ -244,23 +257,19 @@ rm -f /usr/lib/minigate/acme.sh
 rm -f /usr/lib/minigate/proxy.sh
 rm -f /usr/lib/minigate/geofence.sh
 rm -f /usr/lib/minigate/login_guard.sh
-rm -f /usr/lib/opkg/info/luci-app-minigate.control
-rm -f /usr/lib/opkg/info/luci-app-minigate.list
-rm -f /usr/lib/opkg/info/luci-app-minigate.postinst
-rm -f /usr/lib/opkg/info/luci-app-minigate.prerm
 rm -f /tmp/luci-indexcache /tmp/luci-modulecache 2>/dev/null
 /etc/init.d/uhttpd restart
 ```
 
 ### 方式 2：完整卸载并清理配置
 
-确认不再使用 MiniGate 时再执行。此方式会删除配置、证书记录、登录防护封禁记录和日志。
+确认不再使用 minigate 时再执行。此方式会删除配置、证书记录、登录防护封禁记录和日志。
 
 ```sh
 /etc/init.d/minigate stop 2>/dev/null
 /etc/init.d/minigate disable 2>/dev/null
-opkg remove luci-app-minigate --force-depends 2>/dev/null
-apk del luci-app-minigate 2>/dev/null
+opkg remove minigate 2>/dev/null
+apk del minigate 2>/dev/null
 
 rm -f /etc/config/minigate
 rm -f /etc/minigate/login-guard/bans.txt
@@ -282,8 +291,8 @@ rm -f /tmp/luci-indexcache /tmp/luci-modulecache 2>/dev/null
 ## 使用指南
 
 ### 第一步：基础配置
-1. 进入 **LuCI → 服务 → MiniGate**
-2. 在「总览」页面开启 MiniGate
+1. 进入 **LuCI → 服务 → minigate**
+2. 在「总览」页面开启 minigate
 3. 如需 IPv6 反代监听，开启「反向代理监听 IPv6」
 
 ### 第二步：配置 DDNS
@@ -303,7 +312,7 @@ rm -f /tmp/luci-indexcache /tmp/luci-modulecache 2>/dev/null
 2. 添加规则，填写域名、目标地址和端口
 3. 启用 SSL（自动关联 ACME 证书）
 4. 如需输入 `http://域名:监听端口` 后自动进入 HTTPS，开启「HTTP 自动跳转」
-5. 保存并应用；MiniGate 会自动跟随每条 HTTPS 规则的监听端口，无需额外指定固定跳转端口
+5. 保存并应用；minigate 会自动跟随每条 HTTPS 规则的监听端口，无需额外指定固定跳转端口
 
 ### Cloudflare API Token 创建方法
 1. 登录 [Cloudflare Dashboard](https://dash.cloudflare.com/)
@@ -327,7 +336,7 @@ rm -f /tmp/luci-indexcache /tmp/luci-modulecache 2>/dev/null
 ## 文件结构
 
 ```
-luci-app-minigate/
+minigate/
 ├── CONTRIBUTING.md                    # 贡献说明
 ├── LICENSE                            # MIT 许可证
 ├── Makefile                           # OpenWrt 编译配置
@@ -368,6 +377,13 @@ luci-app-minigate/
 
 ## 更新日志
 
+### v2026.9.14
+- 项目、GitHub 仓库和 OpenWrt 内部包名统一为 `minigate`
+- 改用北京时间发布日期版号，同一天后续版本依次追加 `-1`、`-2`
+- 打开总览自动检查更新，点击一键更新先显示本次内容并要求确认
+- 确认绑定具体版本，避免安装未看过说明的后续版本；修复成功状态重复刷新
+- 保留 `v1.3.11` 识别的旧名源码包副本，方便迁移到首个日期版
+
 ### v1.3.11
 - HTTP 自动跳转改为跟随任意 HTTPS 监听端口，同一端口同时接受 HTTP 和 TLS；非 443 端口会保留端口号
 - 协议分流通过 PROXY protocol 保留真实访客 IP，未知 Host 仍直接拒绝
@@ -379,7 +395,7 @@ luci-app-minigate/
 - 公网部署时可将 TCP 80 映射到内部跳转端口（默认 2001），无需暴露 LuCI 的 80 端口
 
 ### v1.3.9
-- 修复 FanchmWrt 等 LuCI 主题使用自身深色开关时，MiniGate 仍显示白色卡片和表格的问题
+- 修复 FanchmWrt 等 LuCI 主题使用自身深色开关时，minigate 仍显示白色卡片和表格的问题
 - 页面背景、文字、边框和控件改为跟随 LuCI 主题变量，同时保留系统深色模式兼容
 
 ### v1.3.8
@@ -398,9 +414,9 @@ luci-app-minigate/
 
 ### v1.3.5
 - 修复同一监听端口下未知 Host / 任意子域名前缀会落到第一个反代站点的问题；现在会生成 `default_server` 兜底规则并直接断开
-- HTTPS 反代端口自动生成 MiniGate 默认证书用于兜底拒绝站点，避免未知 SNI 复用真实站点
-- 修复通过 MiniGate 反向代理访问 LuCI 时，登录防护页面保存设置导致当前反代连接被断开的问题
-- 登录防护页面保存设置时改为轻量重载 MiniGate，不再完整重启反代 nginx
+- HTTPS 反代端口自动生成 minigate 默认证书用于兜底拒绝站点，避免未知 SNI 复用真实站点
+- 修复通过 minigate 反向代理访问 LuCI 时，登录防护页面保存设置导致当前反代连接被断开的问题
+- 登录防护页面保存设置时改为轻量重载 minigate，不再完整重启反代 nginx
 - 登录防护「失败计数中」新增最近访问时间，并按最新访问时间排在最前
 - 修复 OpenWrt/ImmortalWrt 编译菜单中 `luci-app-minigate` 出现两条重复选项的问题
 - Release 自动构建流程改为中文更新说明，并自动刷新安装包附件

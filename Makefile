@@ -1,8 +1,8 @@
 include $(TOPDIR)/rules.mk
 
-PKG_NAME:=luci-app-minigate
-PKG_VERSION:=1.3.11
-PKG_RELEASE:=1
+PKG_NAME:=minigate
+PKG_VERSION:=2026.9.14
+PKG_RELEASE:=
 PKG_LICENSE:=MIT
 PKG_MAINTAINER:=MiniGate
 
@@ -14,6 +14,9 @@ define Package/$(PKG_NAME)
 	SUBMENU:=3. Applications
 	TITLE:=LuCI - MiniGate (DDNS + ACME + Reverse Proxy + Login Guard)
 	DEPENDS:=+luci-base +nginx-ssl +nginx-mod-stream +openssl-util +wget +curl +jsonfilter +coreutils-stat +nftables
+	PROVIDES:=luci-app-minigate
+	CONFLICTS:=luci-app-minigate
+	VERSION:=$(if $(CONFIG_USE_APK),$(subst -,-r,$(PKG_VERSION)),$(PKG_VERSION))
 	PKGARCH:=all
 endef
 
@@ -43,6 +46,7 @@ define Package/$(PKG_NAME)/install
 	$(INSTALL_BIN) ./root/usr/lib/minigate/ddns.sh $(1)/usr/lib/minigate/
 	$(INSTALL_BIN) ./root/usr/lib/minigate/acme.sh $(1)/usr/lib/minigate/
 	$(INSTALL_BIN) ./root/usr/lib/minigate/proxy.sh $(1)/usr/lib/minigate/
+	$(INSTALL_BIN) ./root/usr/lib/minigate/geofence.sh $(1)/usr/lib/minigate/
 	$(INSTALL_BIN) ./root/usr/lib/minigate/login_guard.sh $(1)/usr/lib/minigate/
 	$(INSTALL_BIN) ./root/usr/lib/minigate/update.sh $(1)/usr/lib/minigate/
 

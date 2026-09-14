@@ -3,11 +3,13 @@
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 
-CURRENT_VERSION="1.3.11"
-REPOSITORY="tpxcer/luci-app-minigate"
+CURRENT_VERSION="2026.9.14"
+REPOSITORY="tpxcer/minigate"
 API_URL="https://api.github.com/repos/${REPOSITORY}/releases/latest"
 DOWNLOAD_ROOT="https://github.com/${REPOSITORY}/releases/download"
 STATE_FILE="/tmp/minigate-update-state.json"
+RELEASE_FILE="/tmp/minigate-update-release.json"
+LAST_CHECK_FILE="/tmp/minigate-update-last-check"
 LOCK_FILE="/var/lock/minigate-update.lock"
 TMP_ROOT="/tmp/minigate-update"
 RUN_LOG="/var/log/minigate-update.log"
@@ -53,13 +55,18 @@ download_file() {
 }
 
 valid_version() {
-    printf '%s' "$1" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
+    printf '%s' "$1" | grep -Eq '^[0-9]{4}\.(0?[1-9]|1[0-2])\.(0?[1-9]|[12][0-9]|3[01])(-[1-9][0-9]*)?$'
 }
 
 version_newer() {
     awk -v left="$1" -v right="$2" 'BEGIN {
-        split(left, a, "."); split(right, b, ".");
-        for (i = 1; i <= 3; i++) {
+        split(left, left_parts, "-");
+        split(right, right_parts, "-");
+        split(left_parts[1], a, ".");
+        split(right_parts[1], b, ".");
+        a[4] = left_parts[2] == "" ? 0 : left_parts[2] + 0;
+        b[4] = right_parts[2] == "" ? 0 : right_parts[2] + 0;
+        for (i = 1; i <= 4; i++) {
             if ((a[i] + 0) > (b[i] + 0)) exit 0;
             if ((a[i] + 0) < (b[i] + 0)) exit 1;
         }
@@ -78,14 +85,19 @@ fetch_latest() {
     fi
 
     tag=$(jsonfilter -q -i "$metadata" -e '@.tag_name' 2>/dev/null)
-    rm -f "$metadata"
     tag=${tag#v}
-    valid_version "$tag" || return 1
+    if ! valid_version "$tag"; then
+        rm -f "$metadata"
+        return 1
+    fi
     LATEST_VERSION="$tag"
+    chmod 600 "$metadata"
+    mv -f "$metadata" "$RELEASE_FILE"
     return 0
 }
 
 run_check() {
+    local checked_file
     mkdir -p "$TMP_ROOT" "$(dirname "$LOCK_FILE")"
     exec 8>"$LOCK_FILE" || return 1
     if ! flock -n 8; then
@@ -98,6 +110,11 @@ run_check() {
         emit_state
         return 1
     fi
+    checked_file=$(mktemp "${TMP_ROOT}/last-check.XXXXXX")
+    if [ -n "$checked_file" ]; then
+        date +%s > "$checked_file"
+        mv -f "$checked_file" "$LAST_CHECK_FILE"
+    fi
 
     if version_newer "$LATEST_VERSION" "$CURRENT_VERSION"; then
         write_state "available" 100 "$LATEST_VERSION" true false true "发现新版本，可直接更新"
@@ -107,6 +124,28 @@ run_check() {
         write_state "up_to_date" 100 "$LATEST_VERSION" false false true "当前版本高于 GitHub 最新正式版"
     fi
     emit_state
+}
+
+run_auto_check() {
+    local now last age current status
+
+    current=$(jsonfilter -q -i "$STATE_FILE" -e '@.current' 2>/dev/null)
+    status=$(jsonfilter -q -i "$STATE_FILE" -e '@.status' 2>/dev/null)
+    if [ "$current" = "$CURRENT_VERSION" ] && [ -s "$LAST_CHECK_FILE" ] && \
+       { [ "$status" = "available" ] || [ "$status" = "up_to_date" ]; }; then
+        now=$(date +%s)
+        last=$(cat "$LAST_CHECK_FILE" 2>/dev/null)
+        case "$last" in
+            ''|*[!0-9]*) last=0 ;;
+        esac
+        age=$((now - last))
+        if [ "$age" -ge 0 ] && [ "$age" -lt 600 ]; then
+            emit_state
+            return 0
+        fi
+    fi
+
+    run_check
 }
 
 backup_program() {
@@ -155,7 +194,7 @@ restore_program() {
 }
 
 verify_install() {
-    grep -q "^CURRENT_VERSION=\"${LATEST_VERSION}\"$" /usr/lib/minigate/update.sh || return 1
+    grep -Fxq "CURRENT_VERSION=\"${LATEST_VERSION}\"" /usr/lib/minigate/update.sh || return 1
     [ -x /etc/init.d/minigate ] || return 1
     [ -x /usr/lib/minigate/proxy.sh ] || return 1
 
@@ -170,6 +209,7 @@ verify_install() {
 
 run_apply() {
     local work_dir source_name source_file sums_file expected actual valid_hash backup
+    local confirmed_version="$1"
 
     mkdir -p "$TMP_ROOT" "$(dirname "$LOCK_FILE")"
     exec 9>"$LOCK_FILE" || return 1
@@ -178,10 +218,19 @@ run_apply() {
         return 2
     fi
 
+    if ! valid_version "$confirmed_version"; then
+        write_state "error" 0 "" false false false "请先检查更新并确认本次更新内容"
+        return 1
+    fi
+
     : > "$RUN_LOG"
     write_state "checking" 5 "" false true true "正在检查最新版本"
     if ! fetch_latest; then
         write_state "error" 0 "" false false false "检查失败，请确认路由器可以访问 GitHub"
+        return 1
+    fi
+    if [ "$LATEST_VERSION" != "$confirmed_version" ]; then
+        write_state "error" 0 "$LATEST_VERSION" true false false "最新版本已变化，请重新查看更新内容并确认"
         return 1
     fi
     if ! version_newer "$LATEST_VERSION" "$CURRENT_VERSION"; then
@@ -193,7 +242,7 @@ run_apply() {
         write_state "error" 0 "$LATEST_VERSION" true false false "无法创建更新临时目录"
         return 1
     }
-    source_name="luci-app-minigate-v${LATEST_VERSION}-src.tar.gz"
+    source_name="minigate-v${LATEST_VERSION}-src.tar.gz"
     source_file="${work_dir}/${source_name}"
     sums_file="${work_dir}/SHA256SUMS"
 
@@ -235,9 +284,9 @@ run_apply() {
         rm -rf "$work_dir"
         return 1
     fi
-    if ! grep -q "^PKG_VERSION:=${LATEST_VERSION}$" "${work_dir}/source/Makefile" || \
-       ! grep -q "^PKG_VERSION=\"${LATEST_VERSION}\"$" "${work_dir}/source/scripts/build-ipk.sh" || \
-       ! grep -q "^CURRENT_VERSION=\"${LATEST_VERSION}\"$" "${work_dir}/source/root/usr/lib/minigate/update.sh"; then
+    if ! grep -Fxq "PKG_VERSION:=${LATEST_VERSION}" "${work_dir}/source/Makefile" || \
+       ! grep -Fxq "PKG_VERSION=\"${LATEST_VERSION}\"" "${work_dir}/source/scripts/build-ipk.sh" || \
+       ! grep -Fxq "CURRENT_VERSION=\"${LATEST_VERSION}\"" "${work_dir}/source/root/usr/lib/minigate/update.sh"; then
         write_state "error" 0 "$LATEST_VERSION" true false false "更新包版本信息不一致，已拒绝安装"
         rm -rf "$work_dir"
         return 1
@@ -286,8 +335,9 @@ run_apply() {
 
 case "${1:-status}" in
     status) emit_state ;;
+    auto) run_auto_check ;;
     check) run_check ;;
-    apply) run_apply ;;
+    apply) run_apply "${2:-}" ;;
     *)
         write_state "error" 0 "" false false false "不支持的操作"
         emit_state

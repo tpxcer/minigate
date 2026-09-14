@@ -26,6 +26,19 @@ Before opening a pull request:
    change affects runtime behavior.
 4. Update README or release notes when user-facing behavior changes.
 
+## Releases
+
+Use the Asia/Shanghai publication date as `YYYY.M.D`. The first release on a
+date has no suffix; further releases use `-1`, `-2`, and so on. Tags start with
+`v`. Never replace an existing release with different code.
+
+Update `PKG_VERSION` in `Makefile` and `scripts/build-ipk.sh`, and
+`CURRENT_VERSION` in `root/usr/lib/minigate/update.sh` together. Add the actual
+release notes in `releases/v<VERSION>.md` and update README download examples.
+Run `node --test tests/update.test.cjs` before pushing a commit containing
+`[release]` to `main`. The workflow validates the date, next sequence, and
+matching versions before building and publishing.
+
 ## Pull Requests
 
 Good pull requests usually include:

@@ -9,6 +9,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: minigate-release
+  cancel-in-progress: false
+
 jobs:
   release:
     if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[release]')
@@ -17,20 +21,60 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Read package metadata
         id: meta
         shell: bash
         run: |
           version=$(sed -n 's/^PKG_VERSION="\([^"]*\)"/\1/p' scripts/build-ipk.sh)
-          release=$(sed -n 's/^PKG_RELEASE="\([^"]*\)"/\1/p' scripts/build-ipk.sh)
-          if [ -z "$version" ] || [ -z "$release" ]; then
-            echo "Failed to read package version" >&2
+          make_version=$(sed -n 's/^PKG_VERSION:=//p' Makefile)
+          updater_version=$(sed -n 's/^CURRENT_VERSION="\([^"]*\)"/\1/p' root/usr/lib/minigate/update.sh)
+          if [ -z "$version" ] || [ "$version" != "$make_version" ] || [ "$version" != "$updater_version" ]; then
+            echo "Package and updater versions must match" >&2
             exit 1
           fi
+
+          release_date=$(TZ=Asia/Shanghai date +'%Y.%-m.%-d')
+          suffix=${version#"${release_date}-"}
+          if [[ "$version" != "$release_date" ]] && ! { [[ "$version" == "$release_date-"* ]] && [[ "$suffix" =~ ^[1-9][0-9]*$ ]]; }; then
+            echo "Version must use today's Asia/Shanghai date: ${release_date} or ${release_date}-N" >&2
+            exit 1
+          fi
+
+          tag="v${version}"
+          if git show-ref --verify --quiet "refs/tags/${tag}"; then
+            tag_commit=$(git rev-list -n 1 "$tag")
+            if [ "$tag_commit" != "$GITHUB_SHA" ]; then
+              echo "Existing tag ${tag} points to another commit" >&2
+              exit 1
+            fi
+          else
+            if git show-ref --verify --quiet "refs/tags/v${release_date}"; then
+              next=1
+              for existing in $(git tag -l "v${release_date}-*"); do
+                suffix=${existing#v${release_date}-}
+                if [[ "$suffix" =~ ^[1-9][0-9]*$ ]] && (( suffix >= next )); then
+                  next=$((suffix + 1))
+                fi
+              done
+              expected="${release_date}-${next}"
+            else
+              expected="$release_date"
+            fi
+            if [ "$version" != "$expected" ]; then
+              echo "Next release version must be ${expected}" >&2
+              exit 1
+            fi
+          fi
+
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "release=$release" >> "$GITHUB_OUTPUT"
-          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          test -s "releases/${tag}.md"
+
+      - name: Test updater
+        run: node --test tests/update.test.cjs
 
       - name: Build IPK
         shell: bash
@@ -41,7 +85,9 @@ jobs:
       - name: Build source archive
         shell: bash
         run: |
-          tar --exclude=.git --exclude=dist -czf "dist/luci-app-minigate-v${{ steps.meta.outputs.version }}-src.tar.gz" .
+          git archive --format=tar.gz HEAD > "dist/minigate-v${{ steps.meta.outputs.version }}-src.tar.gz"
+          cp "dist/minigate-v${{ steps.meta.outputs.version }}-src.tar.gz" \
+            "dist/luci-app-minigate-v${{ steps.meta.outputs.version }}-src.tar.gz"
           (cd dist && sha256sum * > SHA256SUMS)
 
       - name: Publish GitHub release
@@ -49,23 +95,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.meta.outputs.tag }}
           VERSION: ${{ steps.meta.outputs.version }}
-          RELEASE: ${{ steps.meta.outputs.release }}
         shell: bash
         run: |
-          cat > release-notes.md <<EOF
-          MiniGate v${VERSION}-${RELEASE}
-
-          更新内容：
-          - 已启用 HTTPS 的任意监听端口可自动识别 HTTP 请求，并以 308 跳转到同域名、同端口的 HTTPS。
-          - LuCI 总览新增检查更新和一键更新，下载固定 GitHub Release 资产并执行 SHA-256 校验、备份和失败回滚。
-          - 未配置的 Host 继续由默认服务器直接拒绝，真实访客 IP 通过协议分流后仍保留。
-
-          说明：
-          - 旧版 Release 附件不会自动变化，请下载当前版本的 luci-app-minigate_${VERSION}-${RELEASE}_all.ipk。
-          EOF
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release edit "$TAG" --title "luci-app-minigate v${VERSION}" --notes-file release-notes.md --latest
-            gh release upload "$TAG" dist/* --clobber
+            echo "Release ${TAG} already exists; publish a new date sequence instead of replacing it" >&2
+            exit 1
           else
-            gh release create "$TAG" dist/* --target "$GITHUB_SHA" --title "luci-app-minigate v${VERSION}" --notes-file release-notes.md --latest
+            gh release create "$TAG" dist/* --target "$GITHUB_SHA" --title "minigate v${VERSION}" --notes-file "releases/${TAG}.md" --latest
           fi

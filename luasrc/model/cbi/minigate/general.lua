@@ -1,7 +1,7 @@
 local m, s, o
 local sys = require "luci.sys"
 
-m = Map("minigate", "MiniGate 轻网关", "轻量级网关管理：动态域名解析（IPv4/IPv6双栈）、SSL 证书签发、反向代理。")
+m = Map("minigate", "minigate", "轻量级网关管理：动态域名解析（IPv4/IPv6双栈）、SSL 证书签发、反向代理。")
 
 m.on_after_commit = function(self)
     local en = self.uci:get("minigate", "global", "enabled")
@@ -25,6 +25,7 @@ o.cfgvalue = function()
     local au = luci.dispatcher.build_url("admin/services/minigate/proxy_access")
     local gu = luci.dispatcher.build_url("admin/services/minigate/geo_lookup")
     local uu = luci.dispatcher.build_url("admin/services/minigate/update_status")
+    local xu = luci.dispatcher.build_url("admin/services/minigate/update_auto")
     local cu = luci.dispatcher.build_url("admin/services/minigate/update_check")
     local iu = luci.dispatcher.build_url("admin/services/minigate/update_apply")
     return [[
@@ -62,6 +63,17 @@ o.cfgvalue = function()
 .mg-update-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .mg-update-progress{height:3px;background:var(--mg-border-soft);overflow:hidden}
 .mg-update-progress span{display:block;width:0;height:100%;background:var(--mg-info);transition:width .25s ease}
+.mg-modal{position:fixed;inset:0;z-index:10000;display:none;align-items:center;justify-content:center;padding:20px;background:rgba(15,23,42,.58)}
+.mg-modal.is-open{display:flex}
+.mg-modal-dialog{display:flex;flex-direction:column;width:min(620px,100%);max-height:min(80vh,720px);border:1px solid var(--mg-border);border-radius:8px;background:var(--mg-surface);box-shadow:0 20px 48px rgba(15,23,42,.28);overflow:hidden}
+.mg-modal-head{display:flex;flex-shrink:0;align-items:center;justify-content:space-between;gap:16px;padding:15px 16px;border-bottom:1px solid var(--mg-border)}
+.mg-modal-title{margin:0;min-width:0;overflow-wrap:anywhere;color:var(--mg-text);font-size:15px;font-weight:700;line-height:1.4}
+.mg-modal-close{display:inline-flex;align-items:center;justify-content:center;flex:0 0 44px;width:44px;height:44px;padding:0;border:0;background:transparent;color:var(--mg-text-muted);font-size:28px;line-height:1;cursor:pointer}
+.mg-modal-close:hover{color:var(--mg-text);background:var(--mg-surface-hover)}
+.mg-modal-notes{min-height:0;padding:16px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--mg-text-soft);font-size:13px;line-height:1.7;background:var(--mg-surface-muted)}
+.mg-modal-actions{display:flex;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end;gap:8px;padding:14px 16px;border-top:1px solid var(--mg-border);background:var(--mg-surface)}
+.mg-modal-actions button{min-height:44px}
+.mg-modal button:focus{outline:2px solid var(--mg-info);outline-offset:2px}
 :root[data-darkmode="true"] .mg-wrap{--mg-success:#78c98d;--mg-info:#7db7df;--mg-warning:#d7a64a;--mg-danger:#e58a84;--mg-muted:#9aa7b3;--mg-link:#7bcf91;--mg-accent:#b69af4;--mg-surface:var(--background-color-medium,#171e26);--mg-surface-muted:var(--background-color-high,#131a22);--mg-surface-alt:var(--background-color-low,#19212a);--mg-surface-hover:#202a34;--mg-control:var(--background-color-high,#111820);--mg-text:var(--text-color-high,#d5dbe3);--mg-text-soft:var(--text-color-high,#c8d0d9);--mg-text-muted:var(--text-color-medium,#9aa7b3);--mg-border:var(--border-color-medium,rgba(148,163,184,.18));--mg-border-soft:var(--border-color-low,rgba(148,163,184,.12));--mg-code-bg:var(--background-color-low,#253142);--mg-shadow:none}
 @media(prefers-color-scheme:dark){
 :root:not([data-darkmode]) .mg-wrap{--mg-success:#78c98d;--mg-info:#7db7df;--mg-warning:#d7a64a;--mg-danger:#e58a84;--mg-muted:#9aa7b3;--mg-link:#7bcf91;--mg-accent:#b69af4;--mg-surface:#171e26;--mg-surface-muted:#131a22;--mg-surface-alt:#19212a;--mg-surface-hover:#202a34;--mg-control:#111820;--mg-text:#d5dbe3;--mg-text-soft:#c8d0d9;--mg-text-muted:#9aa7b3;--mg-border:rgba(148,163,184,.18);--mg-border-soft:rgba(148,163,184,.12);--mg-code-bg:#253142;--mg-shadow:none}
@@ -101,6 +113,20 @@ o.cfgvalue = function()
 </div>
 </div>
 <div class="mg-update-progress"><span id="mg-u-progress"></span></div>
+</div>
+
+<div id="mg-update-modal" class="mg-modal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="mg-update-modal-title">
+<div class="mg-modal-dialog">
+<div class="mg-modal-head">
+<h3 id="mg-update-modal-title" class="mg-modal-title">本次更新内容</h3>
+<button type="button" class="mg-modal-close" aria-label="关闭更新说明" title="关闭更新说明" onclick="mgCloseUpdateDialog()">&times;</button>
+</div>
+<div id="mg-update-modal-notes" class="mg-modal-notes" tabindex="0" aria-label="本次更新内容"></div>
+<div class="mg-modal-actions">
+<button type="button" class="cbi-button" onclick="mgCloseUpdateDialog()">取消</button>
+<button type="button" id="mg-update-confirm" class="cbi-button cbi-button-apply" onclick="mgStartUpdate()">确认更新</button>
+</div>
+</div>
 </div>
 
 <div id="mg-visitors" class="mg-panel">
@@ -202,8 +228,16 @@ function loadVisitors(){
 }
 
 var _updatePolling=false;
+var _latestUpdate=null;
+var _updateDialogOpener=null;
+var _confirmedUpdate=null;
+var _bodyOverflow='';
+var _updateStarting=false;
+var _updateStarted=false;
+var _updateReloading=false;
 function mgRenderUpdate(d){
     if(!d)return;
+    _latestUpdate=d;
     var version=document.getElementById('mg-u-version');
     var message=document.getElementById('mg-u-message');
     var check=document.getElementById('mg-u-check');
@@ -224,7 +258,10 @@ function mgRenderUpdate(d){
     }else if(!d.running){
         _updatePolling=false;
     }
-    if(d.status=='success')setTimeout(function(){location.reload()},3500);
+    if(d.status=='success'&&_updateStarted&&!_updateReloading){
+        _updateReloading=true;
+        setTimeout(function(){location.reload()},3500);
+    }
 }
 
 function mgLoadUpdate(){
@@ -250,19 +287,81 @@ function mgCheckUpdate(){
     });
 }
 
+function mgAutoCheckUpdate(){
+    var check=document.getElementById('mg-u-check');
+    check.disabled=true;
+    document.getElementById('mg-u-message').textContent='正在自动检查更新...';
+    XHR.get(']] .. xu .. [[',null,function(x,d){
+        check.disabled=false;
+        mgRenderUpdate(d||{success:false,message:'自动检查失败，可稍后手动重试'});
+    });
+}
+
 function mgApplyUpdate(){
+    if(!_latestUpdate||!_latestUpdate.available||!_latestUpdate.latest||_latestUpdate.running||_updateStarting||_confirmedUpdate)return;
+    var modal=document.getElementById('mg-update-modal');
+    var title=document.getElementById('mg-update-modal-title');
+    var notes=document.getElementById('mg-update-modal-notes');
+    _updateDialogOpener=document.getElementById('mg-u-apply');
+    _confirmedUpdate=_latestUpdate;
+    title.textContent=_latestUpdate.release_title||('更新到 v'+(_latestUpdate.latest||''));
+    notes.textContent=_latestUpdate.release_notes||'GitHub Release 未提供本次更新说明。';
+    modal.className='mg-modal is-open';
+    modal.setAttribute('aria-hidden','false');
+    _bodyOverflow=document.body.style.overflow;
+    document.body.style.overflow='hidden';
+    notes.focus();
+}
+
+function mgCloseUpdateDialog(){
+    var modal=document.getElementById('mg-update-modal');
+    modal.className='mg-modal';
+    modal.setAttribute('aria-hidden','true');
+    document.body.style.overflow=_bodyOverflow;
+    _confirmedUpdate=null;
+    if(_updateDialogOpener)_updateDialogOpener.focus();
+}
+
+function mgStartUpdate(){
+    if(!_confirmedUpdate||_updateStarting)return;
+    var confirmed=_confirmedUpdate;
+    _updateStarting=true;
+    mgCloseUpdateDialog();
     var apply=document.getElementById('mg-u-apply');
     apply.disabled=true;
+    document.getElementById('mg-u-check').disabled=true;
     document.getElementById('mg-u-message').textContent='正在启动更新任务...';
-    XHR.post(']] .. iu .. [[',{},function(x,d){
+    XHR.post(']] .. iu .. [[',{version:confirmed.latest},function(x,d){
+        _updateStarting=false;
         if(!d||!d.success){
-            apply.disabled=false;
-            mgRenderUpdate({success:false,available:true,message:(d&&d.message)||'无法启动更新任务'});
+            confirmed.success=false;
+            confirmed.message=(d&&d.message)||'无法启动更新任务';
+            mgRenderUpdate(confirmed);
             return;
         }
+        _updateStarted=true;
+        _updatePolling=true;
         setTimeout(mgLoadUpdate,700);
     });
 }
+
+var updateModal=document.getElementById('mg-update-modal');
+if(updateModal){
+    updateModal.onclick=function(e){if(e.target===updateModal)mgCloseUpdateDialog();};
+}
+document.addEventListener('keydown',function(e){
+    if(!updateModal||updateModal.className.indexOf('is-open')<0)return;
+    if(e.key==='Escape'){e.preventDefault();mgCloseUpdateDialog();}
+    if(e.key==='Tab'){
+        var items=updateModal.querySelectorAll('button,[tabindex="0"]');
+        var first=items[0],last=items[items.length-1];
+        if(e.shiftKey&&(document.activeElement===first||!updateModal.contains(document.activeElement))){
+            e.preventDefault();last.focus();
+        }else if(!e.shiftKey&&(document.activeElement===last||!updateModal.contains(document.activeElement))){
+            e.preventDefault();first.focus();
+        }
+    }
+});
 
 var limitSel=document.getElementById('mg-v-limit');
 if(limitSel){
@@ -321,7 +420,7 @@ p2.innerHTML=pinfo;
 
 loadVisitors();
 setInterval(loadVisitors,15000);
-mgLoadUpdate();
+mgAutoCheckUpdate();
 </script>
 ]] end
 
