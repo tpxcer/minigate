@@ -8,6 +8,7 @@ const { spawnSync } = require('node:child_process');
 const root = path.resolve(__dirname, '..');
 const installerPath = path.join(root, 'scripts/install.sh');
 const source = fs.readFileSync(installerPath, 'utf8');
+const sourceInstaller = fs.readFileSync(path.join(root, 'install.sh'), 'utf8');
 const functions = source.slice(source.indexOf('info()'), source.lastIndexOf('\nmain "$@"'));
 const program = source.slice(0, source.lastIndexOf('\nmain "$@"'));
 const currentVersion = fs.readFileSync(path.join(root, 'Makefile'), 'utf8').match(/^PKG_VERSION:=(.+)$/m)[1];
@@ -24,6 +25,11 @@ test('online installer is valid POSIX shell and uses the fixed repository', () =
     assert.equal(result.status, 0, result.stderr);
     assert.match(source, /^REPOSITORY="tpxcer\/minigate"$/m);
     assert.match(source, /releases\/latest\/download/);
+});
+
+test('source installer includes the OpenSSL CLI required by ACME', () => {
+    assert.match(sourceInstaller, /for p in curl jsonfilter nftables nginx-mod-stream openssl-util; do/g);
+    assert.equal((sourceInstaller.match(/openssl-util/g) || []).length, 2);
 });
 
 test('release manifest selects one valid minigate source asset', () => {

@@ -101,6 +101,10 @@ o.cfgvalue=function(self,section)
     return h
 end
 
+-- 最近一天 IP 变化明细
+s=m:section(SimpleSection)
+s.template="minigate/ddns_history"
+
 -- 注入 JS
 s=m:section(NamedSection,"global","global"); s.anonymous=true
 o=s:option(DummyValue,"_js"," "); o.rawhtml=true

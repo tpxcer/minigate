@@ -54,6 +54,7 @@ function index()
     entry({"admin","services","minigate","acme_install"}, call("action_acme_install")).leaf=true
     entry({"admin","services","minigate","acme_issue"}, call("action_acme_issue")).leaf=true
     entry({"admin","services","minigate","ddns_sync"}, call("action_ddns_sync")).leaf=true
+    entry({"admin","services","minigate","ddns_history"}, call("action_ddns_history")).leaf=true
     entry({"admin","services","minigate","proxy_access"}, call("action_proxy_access")).leaf=true
     entry({"admin","services","minigate","geo_lookup"}, call("action_geo_lookup")).leaf=true
     entry({"admin","services","minigate","lg_status"}, call("action_lg_status")).leaf=true
@@ -252,6 +253,110 @@ function action_ddns_sync()
     local ip=sec~=""and(uci:get("minigate",sec,"last_ip")or"")or""
     local ip6=sec~=""and(uci:get("minigate",sec,"last_ip6")or"")or""
     luci.http.prepare_content("application/json"); luci.http.write_json({success=(st=="ok"or st=="partial"),status=st,ip=ip,ip6=ip6})
+end
+
+local function history_section_name(value)
+    return tostring(value or ""):gsub("[^%w_%-]", "_")
+end
+
+local function history_ip_valid(family, ip)
+    if family == "ipv4" then
+        return ip:match("^%d+%.%d+%.%d+%.%d+$") ~= nil
+    end
+    return ip:match("^[%x:]+$") ~= nil and ip:find(":", 1, true) ~= nil
+end
+
+local function read_history_events(path, family, now)
+    local events = {}
+    local file = io.open(path, "r")
+    if not file then return events end
+
+    for line in file:lines() do
+        local raw_ts, ip = line:match("^(%d+)\t([^\t\r\n]+)$")
+        local ts = tonumber(raw_ts)
+        if ts and ts > 0 and ts <= now + 300 and history_ip_valid(family, ip or "") then
+            local previous = events[#events]
+            if not previous or previous.ip ~= ip then
+                events[#events + 1] = {timestamp=ts, ip=ip}
+            end
+        end
+    end
+    file:close()
+    table.sort(events, function(a, b) return a.timestamp < b.timestamp end)
+    return events
+end
+
+function action_ddns_history()
+    local uci = require "luci.model.uci".cursor()
+    local history_dir = os.getenv("MINIGATE_HISTORY_DIR") or "/etc/minigate/ddns-history"
+    local requested = luci.http.formvalue("section") or ""
+    local now = os.time()
+    local cutoff = now - 86400
+    local rows = {}
+    local sections = {}
+
+    if #requested > 64 or (requested ~= "" and not requested:match("^[%w_%-]+$")) then
+        luci.http.status(400, "Bad Request")
+        luci.http.prepare_content("application/json")
+        luci.http.write_json({success=false, message="DDNS 记录参数无效"})
+        return
+    end
+
+    uci:foreach("minigate", "ddns", function(section)
+        local name = section[".name"] or ""
+        if name ~= "" and (requested == "" or requested == name) then
+            sections[#sections + 1] = {
+                name=name,
+                domain=section.domain or name,
+                enabled=(section.enabled == "1" or section.enabled == true),
+                ip_version=section.ip_version or "ipv4"
+            }
+        end
+    end)
+
+    for _, section in ipairs(sections) do
+        if section.enabled then
+            local families = {}
+            if section.ip_version == "ipv4" or section.ip_version == "dual" then families[#families + 1] = "ipv4" end
+            if section.ip_version == "ipv6" or section.ip_version == "dual" then families[#families + 1] = "ipv6" end
+
+            for _, family in ipairs(families) do
+                local path = history_dir .. "/" .. history_section_name(section.name) .. "." .. family .. ".tsv"
+                local events = read_history_events(path, family, now)
+                for index, event in ipairs(events) do
+                    local next_event = events[index + 1]
+                    local end_time = next_event and next_event.timestamp or now
+                    if end_time > cutoff and event.timestamp <= now then
+                        rows[#rows + 1] = {
+                            section=section.name,
+                            domain=section.domain,
+                            family=family,
+                            ip=event.ip,
+                            start_time=event.timestamp,
+                            end_time=end_time,
+                            duration=math.max(0, end_time - event.timestamp),
+                            active=(next_event == nil)
+                        }
+                    end
+                end
+            end
+        end
+    end
+
+    table.sort(rows, function(a, b)
+        if a.start_time == b.start_time then return a.domain < b.domain end
+        return a.start_time > b.start_time
+    end)
+
+    luci.http.prepare_content("application/json")
+    luci.http.write_json({
+        success=true,
+        generated_at=now,
+        window_start=cutoff,
+        window_seconds=86400,
+        sections=sections,
+        records=rows
+    })
 end
 
 function action_proxy_access()

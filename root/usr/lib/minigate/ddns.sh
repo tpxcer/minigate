@@ -1,8 +1,87 @@
 #!/bin/sh
 LOGFILE="/var/log/minigate-ddns.log"
+HISTORY_DIR="${MINIGATE_HISTORY_DIR:-/etc/minigate/ddns-history}"
+HISTORY_WINDOW="${MINIGATE_HISTORY_WINDOW:-86400}"
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [DDNS] $*" >> "$LOGFILE"; }
 trim_log() { [ -f "$LOGFILE" ] && [ "$(wc -l < "$LOGFILE")" -gt 300 ] && { tail -n 150 "$LOGFILE" > "${LOGFILE}.tmp"; mv "${LOGFILE}.tmp" "$LOGFILE"; }; }
+
+history_now() {
+    if [ -n "${MINIGATE_HISTORY_NOW:-}" ]; then
+        printf '%s\n' "$MINIGATE_HISTORY_NOW"
+    else
+        date +%s
+    fi
+}
+
+compact_history_file() {
+    local file="$1" now="$2" cutoff tmp
+    cutoff=$((now - HISTORY_WINDOW))
+    tmp="${file}.tmp.$$"
+
+    awk -F '\t' -v cutoff="$cutoff" '
+        $1 ~ /^[0-9]+$/ && NF >= 2 {
+            if ($1 < cutoff) {
+                anchor = $0
+                next
+            }
+            if (!emitted && anchor != "") {
+                print anchor
+                emitted = 1
+            }
+            print
+            emitted = 1
+        }
+        END {
+            if (!emitted && anchor != "") print anchor
+        }
+    ' "$file" > "$tmp" && chmod 600 "$tmp" 2>/dev/null && mv "$tmp" "$file"
+}
+
+record_ip_history_locked() {
+    local file="$1" ip="$2" now="$3" last_ip
+    if [ -f "$file" ]; then
+        last_ip=$(awk -F '\t' 'NF >= 2 { value=$2 } END { print value }' "$file" 2>/dev/null)
+    else
+        last_ip=""
+    fi
+    [ "$last_ip" = "$ip" ] && return 0
+
+    printf '%s\t%s\n' "$now" "$ip" >> "$file" || return 1
+    chmod 600 "$file" 2>/dev/null || true
+    compact_history_file "$file" "$now"
+}
+
+record_ip_history() {
+    local section="$1" family="$2" ip="$3" safe_section file now last_ip
+    case "$family" in ipv4|ipv6) ;; *) return 1 ;; esac
+    [ -n "$ip" ] || return 1
+
+    safe_section=$(printf '%s' "$section" | tr -c 'A-Za-z0-9_-' '_')
+    [ -n "$safe_section" ] || return 1
+    if [ ! -d "$HISTORY_DIR" ]; then
+        mkdir -p "$HISTORY_DIR" || return 1
+        chmod 700 "$HISTORY_DIR" 2>/dev/null || true
+    fi
+    file="${HISTORY_DIR}/${safe_section}.${family}.tsv"
+    if [ -f "$file" ]; then
+        last_ip=$(awk -F '\t' 'NF >= 2 { value=$2 } END { print value }' "$file" 2>/dev/null)
+        [ "$last_ip" = "$ip" ] && return 0
+    fi
+    now=$(history_now)
+    case "$now" in ''|*[!0-9]*) return 1 ;; esac
+
+    if command -v flock >/dev/null 2>&1; then
+        (
+            umask 077
+            exec 8>"${file}.lock"
+            flock -x 8 || exit 1
+            record_ip_history_locked "$file" "$ip" "$now"
+        )
+    else
+        record_ip_history_locked "$file" "$ip" "$now"
+    fi
+}
 
 # ====== IPv4 获取 ======
 get_ip4_iface() {
@@ -163,7 +242,11 @@ update_one() {
             log "$domain: 获取IPv4失败"
             msgs="${msgs}IPv4获取失败; "
             any_fail=1
-        elif [ "$force" = "1" ] || [ "$ip4" != "$cached" ]; then
+        else
+            record_ip_history "$sec" "ipv4" "$ip4" || log "$domain: IPv4历史记录写入失败"
+        fi
+
+        if [ -n "$ip4" ] && { [ "$force" = "1" ] || [ "$ip4" != "$cached" ]; }; then
             log "$domain: IPv4 ${cached:-无} -> $ip4"
             local result=$(cf_update "$zone_id" "$token" "$domain" "$ip4" "A")
             if [ "$result" = "true" ]; then
@@ -177,7 +260,7 @@ update_one() {
                 msgs="${msgs}A记录失败; "
                 any_fail=1
             fi
-        else
+        elif [ -n "$ip4" ]; then
             log "$domain: IPv4地址一致($ip4)"
             result_ip="$ip4"
             msgs="${msgs}A:${ip4} (未变); "
@@ -195,7 +278,11 @@ update_one() {
             msgs="${msgs}IPv6获取失败; "
             # 双栈模式下 IPv6 获取失败不算整体失败
             [ "$ip_version" = "ipv6" ] && any_fail=1
-        elif [ "$force" = "1" ] || [ "$ip6" != "$cached6" ]; then
+        else
+            record_ip_history "$sec" "ipv6" "$ip6" || log "$domain: IPv6历史记录写入失败"
+        fi
+
+        if [ -n "$ip6" ] && { [ "$force" = "1" ] || [ "$ip6" != "$cached6" ]; }; then
             log "$domain: IPv6 ${cached6:-无} -> $ip6"
             local result=$(cf_update "$zone_id" "$token" "$domain" "$ip6" "AAAA")
             if [ "$result" = "true" ]; then
@@ -209,7 +296,7 @@ update_one() {
                 msgs="${msgs}AAAA记录失败; "
                 any_fail=1
             fi
-        else
+        elif [ -n "$ip6" ]; then
             log "$domain: IPv6地址一致($ip6)"
             result_ip6="$ip6"
             msgs="${msgs}AAAA:${ip6} (未变); "
@@ -249,6 +336,10 @@ main() {
     log "--- 同步完成 ($c 条) ---"
     trim_log
 }
+
+if [ "${MINIGATE_DDNS_LIBRARY_ONLY:-0}" = "1" ]; then
+    return 0 2>/dev/null || exit 0
+fi
 
 # 手动单条同步
 if [ "$1" = "single" ] && [ -n "$2" ]; then

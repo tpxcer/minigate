@@ -7,12 +7,12 @@ echo ""; echo "==== MiniGate 安装 ===="; echo ""
 # 检测包管理器 + 安装依赖（stream 用于同端口 HTTP/HTTPS 识别）
 if command -v opkg >/dev/null 2>&1; then
     PKG="opkg"
-    for p in curl jsonfilter nftables nginx-mod-stream; do
+    for p in curl jsonfilter nftables nginx-mod-stream openssl-util; do
         opkg list-installed 2>/dev/null | grep -q "^${p} " || { opkg update 2>/dev/null; opkg install "$p" 2>/dev/null; }
     done
 elif command -v apk >/dev/null 2>&1; then
     PKG="apk"
-    for p in curl jsonfilter nftables nginx-mod-stream; do
+    for p in curl jsonfilter nftables nginx-mod-stream openssl-util; do
         apk info -e "$p" >/dev/null 2>&1 || apk add "$p" 2>/dev/null
     done
 fi
