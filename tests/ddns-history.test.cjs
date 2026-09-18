@@ -66,14 +66,22 @@ test('DDNS history keeps one anchor before the rolling window', () => {
     ]);
 });
 
-test('IPv4 and IPv6 histories stay separate and section names are safe', () => {
+test('IPv4 and IPv6 histories stay separate and domain names are safe', () => {
     const { historyDir } = runHistory(`
         export MINIGATE_HISTORY_NOW=200000
-        record_ip_history 'wan record' ipv4 203.0.113.7
-        record_ip_history 'wan record' ipv6 2001:db8::7
+        record_ip_history '*.example.com' ipv4 203.0.113.7
+        record_ip_history '*.example.com' ipv6 2001:db8::7
     `);
-    assert.deepEqual(readRows(path.join(historyDir, 'wan_record.ipv4.tsv')), ['200000\t203.0.113.7']);
-    assert.deepEqual(readRows(path.join(historyDir, 'wan_record.ipv6.tsv')), ['200000\t2001:db8::7']);
+    assert.deepEqual(readRows(path.join(historyDir, '__example_com.ipv4.tsv')), ['200000\t203.0.113.7']);
+    assert.deepEqual(readRows(path.join(historyDir, '__example_com.ipv6.tsv')), ['200000\t2001:db8::7']);
+});
+
+test('DDNS writer and controller both use the domain history key', () => {
+    const shellKey = fs.readFileSync(ddnsScript, 'utf8');
+    assert.match(shellKey, /record_ip_history "\$domain" "ipv4" "\$ip4"/);
+    assert.match(shellKey, /record_ip_history "\$domain" "ipv6" "\$ip6"/);
+    assert.match(controller, /history_section_name\(section\.domain\) \.\. "\." \.\. family \.\. "\.tsv"/);
+    assert.doesNotMatch(controller, /history_section_name\(section\.name\)/);
 });
 
 test('controller exposes a read-only rolling 24-hour history endpoint', () => {
@@ -94,4 +102,16 @@ test('DDNS page includes responsive history controls and required columns', () =
     assert.match(view, /data-darkmode="true"/);
     assert.match(view, /refresh\.disabled=true/);
     assert.match(view, /textContent/);
+});
+
+test('DDNS page treats an empty JSON object as an empty array', () => {
+    const match = view.match(/function asArray\(value\)\{([\s\S]*?)\n    \}/);
+    assert.ok(match, 'asArray helper must exist');
+    const asArray = Function('value', match[1]);
+    assert.deepEqual(asArray([]), []);
+    assert.deepEqual(asArray({}), []);
+    assert.equal(asArray({ unexpected: true }), null);
+    assert.equal(asArray(null), null);
+    assert.match(view, /nextRecords===null/);
+    assert.match(view, /records=nextRecords/);
 });

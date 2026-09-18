@@ -321,7 +321,7 @@ function action_ddns_history()
             if section.ip_version == "ipv6" or section.ip_version == "dual" then families[#families + 1] = "ipv6" end
 
             for _, family in ipairs(families) do
-                local path = history_dir .. "/" .. history_section_name(section.name) .. "." .. family .. ".tsv"
+                local path = history_dir .. "/" .. history_section_name(section.domain) .. "." .. family .. ".tsv"
                 local events = read_history_events(path, family, now)
                 for index, event in ipairs(events) do
                     local next_event = events[index + 1]

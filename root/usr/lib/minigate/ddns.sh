@@ -243,7 +243,7 @@ update_one() {
             msgs="${msgs}IPv4获取失败; "
             any_fail=1
         else
-            record_ip_history "$sec" "ipv4" "$ip4" || log "$domain: IPv4历史记录写入失败"
+            record_ip_history "$domain" "ipv4" "$ip4" || log "$domain: IPv4历史记录写入失败"
         fi
 
         if [ -n "$ip4" ] && { [ "$force" = "1" ] || [ "$ip4" != "$cached" ]; }; then
@@ -279,7 +279,7 @@ update_one() {
             # 双栈模式下 IPv6 获取失败不算整体失败
             [ "$ip_version" = "ipv6" ] && any_fail=1
         else
-            record_ip_history "$sec" "ipv6" "$ip6" || log "$domain: IPv6历史记录写入失败"
+            record_ip_history "$domain" "ipv6" "$ip6" || log "$domain: IPv6历史记录写入失败"
         fi
 
         if [ -n "$ip6" ] && { [ "$force" = "1" ] || [ "$ip6" != "$cached6" ]; }; then

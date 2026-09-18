@@ -90,6 +90,12 @@
     var body=document.getElementById('mg-history-body');
     var empty=document.getElementById('mg-history-empty');
 
+    function asArray(value){
+        if(Array.isArray(value))return value;
+        if(value&&typeof value==='object'&&Object.keys(value).length===0)return [];
+        return null;
+    }
+
     function formatTime(timestamp){
         if(!timestamp)return '-';
         return new Date(timestamp*1000).toLocaleString('zh-CN',{hour12:false});
@@ -152,9 +158,11 @@
         refresh.textContent='读取中';
         summary.textContent='正在读取...';
         XHR.get(endpoint,null,function(xhr,data){
+            var nextRecords=asArray(data&&data.records);
+            var nextSections=asArray(data&&data.sections);
             refresh.disabled=false;
             refresh.textContent='刷新';
-            if(!data||data.success!==true||!Array.isArray(data.records)){
+            if(!data||data.success!==true||nextRecords===null){
                 records=[];
                 summary.textContent='读取失败，请稍后重试';
                 tableWrap.hidden=true;
@@ -163,8 +171,8 @@
                 return;
             }
             empty.textContent='暂无 IP 变化记录';
-            records=data.records;
-            setSections(data.sections);
+            records=nextRecords;
+            setSections(nextSections||[]);
             render();
         });
     }
