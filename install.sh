@@ -4,18 +4,36 @@ D="$(cd "$(dirname "$0")" && pwd)"
 echo ""; echo "==== MiniGate 安装 ===="; echo ""
 [ "$(id -u)" = "0" ] || { echo "[!] 需要root"; exit 1; }
 
+dependency_ready() {
+    case "$1" in
+        openssl-util)
+            command -v openssl >/dev/null 2>&1 && openssl version >/dev/null 2>&1
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+install_dependencies() {
+    local p
+    if command -v opkg >/dev/null 2>&1; then
+        PKG="opkg"
+        for p in curl jsonfilter nftables nginx-mod-stream openssl-util; do
+            dependency_ready "$p" && continue
+            opkg list-installed 2>/dev/null | grep -q "^${p} " || { opkg update 2>/dev/null; opkg install "$p" 2>/dev/null; }
+        done
+    elif command -v apk >/dev/null 2>&1; then
+        PKG="apk"
+        for p in curl jsonfilter nftables nginx-mod-stream openssl-util; do
+            dependency_ready "$p" && continue
+            apk info -e "$p" >/dev/null 2>&1 || apk add "$p" 2>/dev/null
+        done
+    fi
+}
+
 # 检测包管理器 + 安装依赖（stream 用于同端口 HTTP/HTTPS 识别）
-if command -v opkg >/dev/null 2>&1; then
-    PKG="opkg"
-    for p in curl jsonfilter nftables nginx-mod-stream openssl-util; do
-        opkg list-installed 2>/dev/null | grep -q "^${p} " || { opkg update 2>/dev/null; opkg install "$p" 2>/dev/null; }
-    done
-elif command -v apk >/dev/null 2>&1; then
-    PKG="apk"
-    for p in curl jsonfilter nftables nginx-mod-stream openssl-util; do
-        apk info -e "$p" >/dev/null 2>&1 || apk add "$p" 2>/dev/null
-    done
-fi
+install_dependencies
 
 [ -f /etc/init.d/minigate ] && /etc/init.d/minigate stop 2>/dev/null || true
 

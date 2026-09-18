@@ -9,6 +9,10 @@ const root = path.resolve(__dirname, '..');
 const installerPath = path.join(root, 'scripts/install.sh');
 const source = fs.readFileSync(installerPath, 'utf8');
 const sourceInstaller = fs.readFileSync(path.join(root, 'install.sh'), 'utf8');
+const sourceDependencyFunctions = sourceInstaller.slice(
+    sourceInstaller.indexOf('dependency_ready()'),
+    sourceInstaller.indexOf('\n# 检测包管理器')
+);
 const functions = source.slice(source.indexOf('info()'), source.lastIndexOf('\nmain "$@"'));
 const program = source.slice(0, source.lastIndexOf('\nmain "$@"'));
 const currentVersion = fs.readFileSync(path.join(root, 'Makefile'), 'utf8').match(/^PKG_VERSION:=(.+)$/m)[1];
@@ -27,9 +31,29 @@ test('online installer is valid POSIX shell and uses the fixed repository', () =
     assert.match(source, /releases\/latest\/download/);
 });
 
-test('source installer includes the OpenSSL CLI required by ACME', () => {
-    assert.match(sourceInstaller, /for p in curl jsonfilter nftables nginx-mod-stream openssl-util; do/g);
-    assert.equal((sourceInstaller.match(/openssl-util/g) || []).length, 2);
+test('source installer skips package installation when a working OpenSSL CLI already exists', () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'minigate-source-deps-'));
+    const calls = path.join(tempDir, 'apk-calls');
+    const openssl = path.join(tempDir, 'openssl');
+    const apk = path.join(tempDir, 'apk');
+    fs.writeFileSync(openssl, '#!/bin/sh\n[ "$1" = version ]\n', { mode: 0o755 });
+    fs.writeFileSync(apk, `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(calls)}\n[ "$1" = info ] && [ "$3" != openssl-util ]\n`, { mode: 0o755 });
+
+    const result = shell(`${sourceDependencyFunctions}\ninstall_dependencies`, { PATH: tempDir });
+    assert.equal(result.status, 0, result.stderr);
+    const log = fs.existsSync(calls) ? fs.readFileSync(calls, 'utf8') : '';
+    assert.doesNotMatch(log, /openssl-util/);
+});
+
+test('source installer installs openssl-util when OpenSSL CLI is unavailable', () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'minigate-source-deps-'));
+    const calls = path.join(tempDir, 'apk-calls');
+    const apk = path.join(tempDir, 'apk');
+    fs.writeFileSync(apk, `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(calls)}\nif [ "$1" = info ]; then [ "$3" != openssl-util ]; else exit 0; fi\n`, { mode: 0o755 });
+
+    const result = shell(`${sourceDependencyFunctions}\ninstall_dependencies`, { PATH: tempDir });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(fs.readFileSync(calls, 'utf8'), /add openssl-util/);
 });
 
 test('release manifest selects one valid minigate source asset', () => {
