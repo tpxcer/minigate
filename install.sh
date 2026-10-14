@@ -35,6 +35,20 @@ install_dependencies() {
 # 检测包管理器 + 安装依赖（stream 用于同端口 HTTP/HTTPS 识别）
 install_dependencies
 
+# 旧版 init 脚本停止登录防护时不会结束 logread/tail 子进程，升级前先按进程树结束
+stop_process_tree() {
+    local child
+    for child in $(pgrep -P "$1" 2>/dev/null); do
+        stop_process_tree "$child"
+    done
+    kill "$1" 2>/dev/null || true
+}
+if command -v pgrep >/dev/null 2>&1; then
+    for pid in $(pgrep -f '/usr/lib/minigate/login_guard.sh run' 2>/dev/null); do
+        stop_process_tree "$pid"
+    done
+fi
+
 [ -f /etc/init.d/minigate ] && /etc/init.d/minigate stop 2>/dev/null || true
 
 # 清理旧的独立 login-guard 部署（如有）

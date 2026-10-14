@@ -84,3 +84,11 @@ test('stopping the login guard also ends its logread/tail children', async () =>
     assert.equal(pgrep(`tail -n 0 -f ${followed}`), '', 'tail -f must not be left behind');
     assert.equal(pgrep('/usr/lib/minigate/login_guard.sh run'), '');
 });
+
+test('upgrades stop the old login guard tree before running the previous init script', () => {
+    const installer = fs.readFileSync(path.join(root, 'install.sh'), 'utf8');
+    const treeStop = installer.indexOf("pgrep -f '/usr/lib/minigate/login_guard.sh run'");
+    const initStop = installer.indexOf('/etc/init.d/minigate stop');
+    assert.ok(treeStop > 0 && treeStop < initStop, 'installer must stop the login guard tree before the old init script');
+    assert.match(installer, /stop_process_tree\(\) \{[\s\S]*pgrep -P "\$1"/);
+});
