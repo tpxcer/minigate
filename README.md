@@ -2,9 +2,9 @@
 
 一个类似 Lucky 的轻量级 OpenWrt 应用，提供四大核心功能：DDNS、SSL 证书、反向代理、登录防护。
 
-当前版本：**v2026.10.14**。项目名称、仓库名及 OpenWrt 内部包名均为 **`minigate`**。
+当前版本：**v2026.10.14-1**。项目名称、仓库名及 OpenWrt 内部包名均为 **`minigate`**。
 
-> OpenWrt 用户请从 [Releases](https://github.com/tpxcer/minigate/releases/latest) 下载 `minigate_2026.10.14_all.ipk`。不要把 GitHub 自动生成的 `Source code (zip)` / `Source code (tar.gz)` 当安装包上传到 LuCI。
+> OpenWrt 用户请从 [Releases](https://github.com/tpxcer/minigate/releases/latest) 下载 `minigate_2026.10.14-1_all.ipk`。不要把 GitHub 自动生成的 `Source code (zip)` / `Source code (tar.gz)` 当安装包上传到 LuCI。
 
 ## 项目定位
 
@@ -91,20 +91,20 @@ minigate 面向需要自托管轻量网关能力的 OpenWrt / ImmortalWrt 用户
 
 从 [Releases](https://github.com/tpxcer/minigate/releases/latest) 下载：
 
-`minigate_2026.10.14_all.ipk`
+`minigate_2026.10.14-1_all.ipk`
 
 **通过 LuCI 界面安装：**
 1. 打开 LuCI → **系统** → **软件包**
 2. 点击 **上传软件包**
-3. 选择 `minigate_2026.10.14_all.ipk`，点击安装
+3. 选择 `minigate_2026.10.14-1_all.ipk`，点击安装
 
 **通过命令行安装：**
 
 ```bash
 cd /tmp
-wget -O minigate_2026.10.14_all.ipk https://github.com/tpxcer/minigate/releases/download/v2026.10.14/minigate_2026.10.14_all.ipk
+wget -O minigate_2026.10.14-1_all.ipk https://github.com/tpxcer/minigate/releases/download/v2026.10.14-1/minigate_2026.10.14-1_all.ipk
 opkg update
-opkg install /tmp/minigate_2026.10.14_all.ipk
+opkg install /tmp/minigate_2026.10.14-1_all.ipk
 rm -f /tmp/luci-indexcache /tmp/luci-modulecache 2>/dev/null
 /etc/init.d/uhttpd restart
 /etc/init.d/minigate restart
@@ -123,7 +123,7 @@ Release 用的 `.ipk` 请用仓库脚本生成，避免生成 Debian 风格 ar �
 脚本会输出：
 
 ```text
-dist/minigate_2026.10.14_all.ipk
+dist/minigate_2026.10.14-1_all.ipk
 ```
 
 该文件外层是 OpenWrt/ImmortalWrt 24.10 兼容的 `tar.gz`，内部成员顺序为 `debian-binary`、`control.tar.gz`、`data.tar.gz`。
@@ -151,7 +151,7 @@ wget -qO- https://raw.githubusercontent.com/tpxcer/minigate/main/scripts/install
 需要指定并核对具体版本时，执行：
 
 ```bash
-d="$(mktemp -d /tmp/minigate.XXXXXX)" && cd "$d" && wget -q https://github.com/tpxcer/minigate/releases/download/v2026.10.14/minigate-v2026.10.14-src.tar.gz && wget -q https://github.com/tpxcer/minigate/releases/download/v2026.10.14/SHA256SUMS && grep 'minigate-v2026.10.14-src.tar.gz$' SHA256SUMS | sha256sum -c - && tar xzf minigate-v2026.10.14-src.tar.gz && sh install.sh && /etc/init.d/uhttpd restart && /etc/init.d/minigate restart
+d="$(mktemp -d /tmp/minigate.XXXXXX)" && cd "$d" && wget -q https://github.com/tpxcer/minigate/releases/download/v2026.10.14-1/minigate-v2026.10.14-1-src.tar.gz && wget -q https://github.com/tpxcer/minigate/releases/download/v2026.10.14-1/SHA256SUMS && grep 'minigate-v2026.10.14-1-src.tar.gz$' SHA256SUMS | sha256sum -c - && tar xzf minigate-v2026.10.14-1-src.tar.gz && sh install.sh && /etc/init.d/uhttpd restart && /etc/init.d/minigate restart
 ```
 
 其中 `minigate.XXXXXX` 是临时目录模板，系统会自动把六个 `X` 替换为随机字符，避免与已有目录重名。该命令会校验源码包的 SHA-256、保留现有 minigate 配置并重启 LuCI 与 minigate 服务。
@@ -166,14 +166,14 @@ ssh root@192.168.1.1
 
 # 2. 在路由器上直接下载 Release 源码包
 cd /tmp
-wget -O minigate-src.tar.gz https://github.com/tpxcer/minigate/releases/download/v2026.10.14/minigate-v2026.10.14-src.tar.gz
-wget -O minigate-SHA256SUMS https://github.com/tpxcer/minigate/releases/download/v2026.10.14/SHA256SUMS
-awk '$2 == "minigate-v2026.10.14-src.tar.gz" {print $1 "  minigate-src.tar.gz"}' minigate-SHA256SUMS | sha256sum -c - || exit 1
+wget -O minigate-src.tar.gz https://github.com/tpxcer/minigate/releases/download/v2026.10.14-1/minigate-v2026.10.14-1-src.tar.gz
+wget -O minigate-SHA256SUMS https://github.com/tpxcer/minigate/releases/download/v2026.10.14-1/SHA256SUMS
+awk '$2 == "minigate-v2026.10.14-1-src.tar.gz" {print $1 "  minigate-src.tar.gz"}' minigate-SHA256SUMS | sha256sum -c - || exit 1
 
 # 3. 解压到独立目录并安装
-mkdir -p /tmp/minigate-v2026.10.14
-tar xzf minigate-src.tar.gz -C /tmp/minigate-v2026.10.14
-cd /tmp/minigate-v2026.10.14
+mkdir -p /tmp/minigate-v2026.10.14-1
+tar xzf minigate-src.tar.gz -C /tmp/minigate-v2026.10.14-1
+cd /tmp/minigate-v2026.10.14-1
 sh install.sh
 
 # 4. 启动服务
@@ -223,7 +223,7 @@ SSH 登录后执行上方「方法 2」的一条命令，保留原有配置并�
 ### IPK 升级
 
 ```bash
-opkg install --force-reinstall /tmp/minigate_2026.10.14_all.ipk
+opkg install --force-reinstall /tmp/minigate_2026.10.14-1_all.ipk
 rm -f /tmp/luci-indexcache /tmp/luci-modulecache 2>/dev/null
 /etc/init.d/minigate restart
 ```
@@ -371,6 +371,15 @@ minigate/
 - `nftables` - 登录防护用（OpenWrt 22.03+ / ImmortalWrt 默认已装）
 
 ## 更新日志
+
+### v2026.10.14-1
+- 修复 LuCI 一键卸载和命令行卸载在停止服务后中断、程序和页面未被删除的问题
+- 证书自动续期后重载 Nginx，避免继续使用旧证书直至过期
+- 修复登录防护定时检查逻辑写反：不再每 5 分钟改写封禁文件，防火墙重载后立即恢复封禁
+- DDNS 网络请求增加超时并串行执行；Cloudflare 令牌不再出现在进程参数中；「间隔(秒)」设置现在生效
+- 保存设置后等配置提交再应用；保存动态 DNS 页不再重启反向代理
+- 访问日志等内存日志设置大小上限；封禁、同步、签发等操作改为 POST 并校验 CSRF 令牌
+- 界面：空列表与读取失败分开提示、归属地不再闪烁、后台标签暂停轮询、手机端卡片布局、证书页适配深色主题
 
 ### v2026.10.14
 - 公网 IP 更新并经 Cloudflare 确认成功后，无重启刷新 sing-box 与 dnsmasq 的本地 DNS 缓存，减少局域网继续命中旧地址
