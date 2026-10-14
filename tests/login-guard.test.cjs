@@ -62,32 +62,51 @@ test('a firewall reload that drops the set restores persisted bans immediately',
     assert.equal(scenario.bans, '198.51.100.4 9999999999\n');
 });
 
-test('stopping the login guard also ends its logread/tail children', async () => {
+// BusyBox pgrep 只排除自身，不像 macOS 那样默认排除祖先进程。
+function busyboxPgrep(dir) {
+    const shim = path.join(dir, 'bin/pgrep');
+    fs.mkdirSync(path.dirname(shim), { recursive: true });
+    fs.writeFileSync(shim, `#!/bin/sh
+self=$$
+case "$1" in
+    -f) ps -A -o pid= -o ppid= -o args= | awk -v self="$self" -v re="$2" '
+            { pid=$1; ppid=$2; if (pid == self || ppid == self) next; $1=""; $2=""; sub(/^ +/, ""); if ($0 ~ re) print pid }' ;;
+    -P) ps -A -o pid= -o ppid= | awk -v self="$self" -v parent="$2" '$2 == parent && $1 != self { print $1 }' ;;
+esac
+`);
+    fs.chmodSync(shim, 0o755);
+    return path.dirname(shim);
+}
+
+test('stopping the login guard ends its children but not a caller that mentions it', async () => {
     const init = path.join(root, 'root/etc/init.d/minigate');
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'minigate-login-guard-stop-'));
     const followed = path.join(dir, 'access.log');
+    const guardScript = path.join(dir, 'login_guard.sh');
+    const marker = path.join(dir, 'caller-survived');
     fs.writeFileSync(followed, '');
     // 与 login_guard.sh run 相同的结构：后台子 shell + tail -f 管道；忽略 SIGPIPE 的 tail 失去读端后不会自行退出
-    const guard = spawn('/bin/sh', ['-c', 'trap "" PIPE; ( while :; do sleep 1; done ) & tail -n 0 -f "$LG_FOLLOW" | while read -r line; do :; done', '/usr/lib/minigate/login_guard.sh', 'run'], {
-        detached: true, stdio: 'ignore', env: { ...process.env, LG_FOLLOW: followed }
-    });
+    fs.writeFileSync(guardScript, `trap "" PIPE\n( while :; do sleep 1; done ) &\ntail -n 0 -f ${JSON.stringify(followed)} | while read -r line; do :; done\n`);
+    const guard = spawn('/bin/sh', [guardScript, 'run'], { detached: true, stdio: 'ignore' });
     guard.unref();
     const pgrep = pattern => spawnSync('pgrep', ['-f', pattern], { encoding: 'utf8' }).stdout.trim();
     const started = Date.now();
     while (!pgrep(`tail -n 0 -f ${followed}`) && Date.now() - started < 3000) await new Promise(resolve => setTimeout(resolve, 100));
-    const tailPid = pgrep(`tail -n 0 -f ${followed}`);
-    assert.ok(tailPid, 'fake login guard did not start');
+    assert.ok(pgrep(`tail -n 0 -f ${followed}`), 'fake login guard did not start');
 
-    const result = spawnSync('/bin/sh', ['-c', `logger() { :; }; nft() { return 1; }; . ${JSON.stringify(init)}; stop_login_guard`], { encoding: 'utf8' });
+    // 调用方的命令行里含有登录防护的命令文本（例如 SSH 一次性执行的脚本），不能被当成登录防护结束
+    const caller = `logger() { :; }; nft() { return 1; }; . ${JSON.stringify(init)}; LOGIN_GUARD=${JSON.stringify(guardScript)}; echo "checking ${guardScript} run" >/dev/null; stop_login_guard; echo ok > ${JSON.stringify(marker)}`;
+    const result = spawnSync('/bin/sh', ['-c', caller], { encoding: 'utf8', env: { ...process.env, PATH: `${busyboxPgrep(dir)}:${process.env.PATH}` } });
     assert.equal(result.status, 0, result.stderr);
+    assert.equal(fs.existsSync(marker), true, 'stop_login_guard killed its own caller');
     await new Promise(resolve => setTimeout(resolve, 300));
     assert.equal(pgrep(`tail -n 0 -f ${followed}`), '', 'tail -f must not be left behind');
-    assert.equal(pgrep('/usr/lib/minigate/login_guard.sh run'), '');
+    assert.equal(pgrep(`${guardScript} run`), '');
 });
 
 test('upgrades stop the old login guard tree before running the previous init script', () => {
     const installer = fs.readFileSync(path.join(root, 'install.sh'), 'utf8');
-    const treeStop = installer.indexOf("pgrep -f '/usr/lib/minigate/login_guard.sh run'");
+    const treeStop = installer.indexOf("pgrep -f '^/bin/sh /usr/lib/minigate/login_guard.sh run'");
     const initStop = installer.indexOf('/etc/init.d/minigate stop');
     assert.ok(treeStop > 0 && treeStop < initStop, 'installer must stop the login guard tree before the old init script');
     assert.match(installer, /stop_process_tree\(\) \{[\s\S]*pgrep -P "\$1"/);

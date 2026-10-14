@@ -114,7 +114,7 @@ stop_services() {
     program_dir="$(root_path /usr/lib/minigate)"
 
     if command -v pgrep >/dev/null 2>&1; then
-        for pid in $(pgrep -f "${program_dir}/login_guard.sh run" 2>/dev/null); do
+        for pid in $(pgrep -f "^/bin/sh ${program_dir}/login_guard.sh run" 2>/dev/null); do
             stop_process_tree "$pid"
         done
     fi

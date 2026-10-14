@@ -44,7 +44,7 @@ stop_process_tree() {
     kill "$1" 2>/dev/null || true
 }
 if command -v pgrep >/dev/null 2>&1; then
-    for pid in $(pgrep -f '/usr/lib/minigate/login_guard.sh run' 2>/dev/null); do
+    for pid in $(pgrep -f '^/bin/sh /usr/lib/minigate/login_guard.sh run' 2>/dev/null); do
         stop_process_tree "$pid"
     done
 fi

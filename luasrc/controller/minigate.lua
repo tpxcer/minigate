@@ -517,7 +517,7 @@ function action_lg_status()
     local window_s = tonumber(uci:get("minigate","login_guard","window")) or 600
 
     -- 服务是否在跑
-    local pid_out = sys.exec("pgrep -f '/usr/lib/minigate/login_guard.sh run' 2>/dev/null")
+    local pid_out = sys.exec("pgrep -f '^/bin/sh /usr/lib/minigate/login_guard.sh run' 2>/dev/null")
     local running = (pid_out ~= nil and pid_out:match("%d") ~= nil)
 
     -- 已封禁列表（解析 nft -j 输出）
