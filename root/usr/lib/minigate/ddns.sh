@@ -15,7 +15,8 @@ trim_log() { [ -f "$LOGFILE" ] && [ "$(wc -l < "$LOGFILE")" -gt 300 ] && { tail 
 lock_ddns() {
     command -v flock >/dev/null 2>&1 || return 0
     mkdir -p "$(dirname "$LOCK_FILE")" 2>/dev/null
-    exec 7>"$LOCK_FILE" || return 0
+    touch "$LOCK_FILE" 2>/dev/null || return 0
+    exec 7>"$LOCK_FILE"
     if [ "$1" = "wait" ]; then
         flock -x 7
     else
@@ -269,10 +270,29 @@ cf_update() {
     fi
 }
 
+ddns_interval() {
+    local interval
+    interval=$(uci -q get minigate.${1}.check_interval)
+    case "$interval" in ''|*[!0-9]*) interval=300 ;; esac
+    [ "$interval" -ge 300 ] 2>/dev/null || interval=300
+    echo "$interval"
+}
+
+# 定时任务每 5 分钟触发；未到本记录的检查间隔时跳过，留 30 秒余量吸收启动抖动。
+ddns_due() {
+    local sec="$1" last now
+    last=$(cat "${CACHE_DIR}/minigate_ddns_${sec}.checked" 2>/dev/null)
+    case "$last" in ''|*[!0-9]*) return 0 ;; esac
+    now=$(date +%s)
+    [ "$now" -ge "$last" ] || return 0
+    [ $((now - last + 30)) -ge "$(ddns_interval "$sec")" ]
+}
+
+# 下一次实际执行的整 5 分钟时刻，与 ddns_due 的判断一致
 calc_next() {
     local interval="${1:-300}"
     local now=$(date +%s)
-    local next=$((now + interval))
+    local next=$(( (now + interval + 269) / 300 * 300 ))
     date -d "@${next}" '+%H:%M:%S' 2>/dev/null || echo "${interval}秒后"
 }
 
@@ -280,6 +300,7 @@ update_one() {
     local sec="$1" force="$2"
     local enabled=$(uci -q get minigate.${sec}.enabled)
     [ "$enabled" = "1" ] || return 0
+    date +%s > "${CACHE_DIR}/minigate_ddns_${sec}.checked"
 
     local domain=$(uci -q get minigate.${sec}.domain)
     local zone_id=$(uci -q get minigate.${sec}.cf_zone_id)
@@ -287,7 +308,7 @@ update_one() {
     local ip_source=$(uci -q get minigate.${sec}.ip_source)
     local iface=$(uci -q get minigate.${sec}.interface)
     local ip_url=$(uci -q get minigate.${sec}.ip_url)
-    local interval=$(uci -q get minigate.${sec}.check_interval); interval=${interval:-300}
+    local interval=$(ddns_interval "$sec")
     local ip_version=$(uci -q get minigate.${sec}.ip_version); ip_version=${ip_version:-ipv4}
     local iface6=$(uci -q get minigate.${sec}.interface6); iface6=${iface6:-wan6}
     local ip_url6=$(uci -q get minigate.${sec}.ip_url6); ip_url6=${ip_url6:-https://api6.ipify.org}
@@ -414,11 +435,18 @@ main() {
         log "上一轮同步仍在运行，跳过本次定时检查"
         return 0
     fi
-    log "--- 开始同步 ---"
     # 与 LuCI 手动同步使用相同的节名，两条路径共享同一份 IP 缓存
     local sections=$(uci -q -X show minigate | grep '=ddns$' | cut -d. -f2 | cut -d= -f1)
+    local due="" sec
+    for sec in $sections; do
+        [ "$(uci -q get minigate.${sec}.enabled)" = "1" ] || continue
+        if [ "$force" = "1" ] || ddns_due "$sec"; then due="$due $sec"; fi
+    done
+    # 定时检查没有到期记录时静默退出，不写日志、不提交配置
+    [ -n "$sections" ] && [ -z "$due" ] && return 0
+    log "--- 开始同步 ---"
     local c=0
-    for sec in $sections; do update_one "$sec" "$force"; c=$((c + 1)); done
+    for sec in $due; do update_one "$sec" "$force"; c=$((c + 1)); done
     [ "$c" = "0" ] && log "无 DDNS 记录"
     uci commit minigate
     log "--- 同步完成 ($c 条) ---"

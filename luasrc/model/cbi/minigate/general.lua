@@ -5,11 +5,7 @@ m = Map("minigate", "minigate", "轻量级网关管理：动态域名解析（IP
 
 m.on_after_commit = function(self)
     local en = self.uci:get("minigate", "global", "enabled")
-    if en == "1" then
-        sys.call("/etc/init.d/minigate restart >/dev/null 2>&1 &")
-    else
-        sys.call("/etc/init.d/minigate stop >/dev/null 2>&1 &")
-    end
+    sys.call("/bin/sh /usr/lib/minigate/after_commit.sh " .. (en == "1" and "restart" or "stop") .. " >/dev/null 2>&1")
 end
 
 s = m:section(NamedSection, "global", "global", "服务状态")

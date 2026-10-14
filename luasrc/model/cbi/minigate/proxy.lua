@@ -5,7 +5,7 @@ local uc = require "luci.model.uci".cursor()
 m = Map("minigate", "MiniGate - 反向代理", "保存后自动生效。")
 
 m.on_after_commit = function(self)
-    sys.call("sleep 1 && /bin/sh /usr/lib/minigate/proxy.sh reload >/dev/null 2>&1 &")
+    sys.call("/bin/sh /usr/lib/minigate/after_commit.sh proxy >/dev/null 2>&1")
 end
 
 local ddns_domains = {}

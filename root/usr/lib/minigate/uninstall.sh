@@ -229,7 +229,8 @@ remove_runtime_files() {
         "$tmp_dir"/minigate_proxy_*.tmp \
         "$tmp_dir"/minigate_default_*.tmp \
         "$tmp_dir"/minigate_stream_*.tmp \
-        "$tmp_dir"/minigate_ddns_*.cache
+        "$tmp_dir"/minigate_ddns_*.cache \
+        "$tmp_dir"/minigate_ddns_*.checked
 
     if [ "$PURGE" = "1" ]; then
         rm -f "$(root_path /etc/config/minigate)" "$log_dir"/minigate-*.log "$log_dir"/minigate-*.log.1

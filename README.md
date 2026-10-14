@@ -37,7 +37,7 @@ minigate 面向需要自托管轻量网关能力的 OpenWrt / ImmortalWrt 用户
 - 公网记录变化成功后无重启刷新 sing-box 与 dnsmasq DNS 缓存，减少局域网继续命中旧地址
 - 同名同类型记录重复时，保留匹配当前 IP 的记录并清理其余旧记录，避免旧 IP 继续参与解析
 - 支持从网络接口或外部 URL 获取 IP
-- 可配置检查间隔和强制更新间隔
+- 每条记录可配置检查间隔（最小 5 分钟，按 5 分钟取整）
 - 一键手动触发更新
 - 最近一天 IP 变化明细，显示 IPv4/IPv6 地址、开始时间、结束时间和持续时长
 
@@ -354,6 +354,7 @@ minigate/
         ├── acme.sh                    # 证书管理
         ├── proxy.sh                   # 反代（协议分流+IPv6+访问日志）
         ├── login_guard.sh             # 登录防护 watcher + CLI
+        ├── after_commit.sh            # LuCI 保存后等配置提交再应用
         └── update.sh                  # GitHub Release 安全更新器
 ```
 

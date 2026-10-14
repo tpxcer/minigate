@@ -10,10 +10,9 @@ end
 
 m=Map("minigate","MiniGate - 动态DNS","支持多域名、IPv4/IPv6双栈。保存后立即同步。需先启用全局开关。")
 
+-- 只重新同步 DDNS，不重启反向代理和登录防护
 m.on_after_commit=function(self)
-    sys.call("/bin/sh /usr/lib/minigate/ddns.sh force >/dev/null 2>&1 &")
-    local en=self.uci:get("minigate","global","enabled")
-    if en=="1"then sys.call("/etc/init.d/minigate restart >/dev/null 2>&1 &") end
+    sys.call("/bin/sh /usr/lib/minigate/after_commit.sh ddns >/dev/null 2>&1")
 end
 
 s=m:section(TypedSection,"ddns","DDNS 记录")
@@ -74,6 +73,7 @@ o:depends({ip_source="url",ip_version="ipv6"})
 o:depends({ip_source="url",ip_version="dual"})
 
 o=s:option(Value,"check_interval","间隔(秒)"); o.datatype="uinteger"; o.default="300"
+o.description="最小 300 秒。定时任务每 5 分钟检查一次，实际间隔按 5 分钟向上取整。"
 
 -- 状态+手动同步
 o=s:option(DummyValue,"_info","运行状态"); o.rawhtml=true
