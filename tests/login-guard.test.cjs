@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 
 const root = path.resolve(__dirname, '..');
 const script = path.join(root, 'root/usr/lib/minigate/login_guard.sh');
@@ -60,4 +60,27 @@ test('a firewall reload that drops the set restores persisted bans immediately',
     assert.match(scenario.calls, /add element inet fw4 login_banned_v4 \{ 198\.51\.100\.4 timeout \d+s \}/);
     assert.doesNotMatch(scenario.calls, /198\.51\.100\.5/, 'expired bans must not be restored');
     assert.equal(scenario.bans, '198.51.100.4 9999999999\n');
+});
+
+test('stopping the login guard also ends its logread/tail children', async () => {
+    const init = path.join(root, 'root/etc/init.d/minigate');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'minigate-login-guard-stop-'));
+    const followed = path.join(dir, 'access.log');
+    fs.writeFileSync(followed, '');
+    // 与 login_guard.sh run 相同的结构：后台子 shell + tail -f 管道；忽略 SIGPIPE 的 tail 失去读端后不会自行退出
+    const guard = spawn('/bin/sh', ['-c', 'trap "" PIPE; ( while :; do sleep 1; done ) & tail -n 0 -f "$LG_FOLLOW" | while read -r line; do :; done', '/usr/lib/minigate/login_guard.sh', 'run'], {
+        detached: true, stdio: 'ignore', env: { ...process.env, LG_FOLLOW: followed }
+    });
+    guard.unref();
+    const pgrep = pattern => spawnSync('pgrep', ['-f', pattern], { encoding: 'utf8' }).stdout.trim();
+    const started = Date.now();
+    while (!pgrep(`tail -n 0 -f ${followed}`) && Date.now() - started < 3000) await new Promise(resolve => setTimeout(resolve, 100));
+    const tailPid = pgrep(`tail -n 0 -f ${followed}`);
+    assert.ok(tailPid, 'fake login guard did not start');
+
+    const result = spawnSync('/bin/sh', ['-c', `logger() { :; }; nft() { return 1; }; . ${JSON.stringify(init)}; stop_login_guard`], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    await new Promise(resolve => setTimeout(resolve, 300));
+    assert.equal(pgrep(`tail -n 0 -f ${followed}`), '', 'tail -f must not be left behind');
+    assert.equal(pgrep('/usr/lib/minigate/login_guard.sh run'), '');
 });

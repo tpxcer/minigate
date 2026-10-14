@@ -12,10 +12,21 @@ start_login_guard() {
     logger -t minigate "登录防护已启动"
 }
 
+# 先结束子进程：logread -f / tail -f 忽略 SIGPIPE，父 shell 退出后不会自行结束
+stop_process_tree() {
+    local child
+    for child in $(pgrep -P "$1" 2>/dev/null); do
+        stop_process_tree "$child"
+    done
+    kill "$1" >/dev/null 2>&1
+}
+
 stop_login_guard() {
-    local pids
+    local pids pid
     pids=$(pgrep -f '/usr/lib/minigate/login_guard.sh run' 2>/dev/null)
-    [ -n "$pids" ] && kill $pids >/dev/null 2>&1
+    for pid in $pids; do
+        stop_process_tree "$pid"
+    done
     sleep 1
     pids=$(pgrep -f '/usr/lib/minigate/login_guard.sh run' 2>/dev/null)
     [ -n "$pids" ] && kill -9 $pids >/dev/null 2>&1
