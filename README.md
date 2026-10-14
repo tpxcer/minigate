@@ -361,6 +361,7 @@ minigate/
 ## 依赖
 
 - `luci-base` - LuCI Web 界面
+- `luci-compat` - LuCI 的 CBI 页面支持（新版 LuCI 不再默认附带）
 - `nginx-ssl` - Nginx（带 SSL 支持）
 - `nginx-mod-stream` - 在同一入口端口识别 HTTP 与 TLS
 - `openssl-util` - 证书工具

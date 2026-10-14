@@ -149,3 +149,31 @@ test('README exposes the short command and keeps a fixed-version fallback', () =
     assert.match(readme, /curl -fsSL https:\/\/raw\.githubusercontent\.com\/tpxcer\/minigate\/main\/scripts\/install\.sh \| sh/);
     assert.ok(readme.includes(`releases/download/v${currentVersion}/minigate-v${currentVersion}-src.tar.gz`));
 });
+
+function runSourceDependencies({ cbiPresent, compatRegistered }) {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'minigate-source-deps-'));
+    const calls = path.join(tempDir, 'apk-calls');
+    const luciDir = path.join(tempDir, 'luci');
+    fs.mkdirSync(luciDir);
+    if (cbiPresent) fs.writeFileSync(path.join(luciDir, 'cbi.lua'), '');
+    fs.writeFileSync(path.join(tempDir, 'openssl'), '#!/bin/sh\n[ "$1" = version ]\n', { mode: 0o755 });
+    fs.writeFileSync(path.join(tempDir, 'apk'), `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(calls)}\nif [ "$1" = info ]; then [ "$3" != luci-compat ] || [ ${compatRegistered ? 1 : 0} = 1 ]; else exit 0; fi\n`, { mode: 0o755 });
+    const result = shell(`${sourceDependencyFunctions}\ninstall_dependencies`, { PATH: tempDir, MINIGATE_LUCI_DIR: luciDir });
+    assert.equal(result.status, 0, result.stderr);
+    return fs.existsSync(calls) ? fs.readFileSync(calls, 'utf8') : '';
+}
+
+test('source installer skips luci-compat when the CBI module already exists', () => {
+    assert.doesNotMatch(runSourceDependencies({ cbiPresent: true, compatRegistered: false }), /luci-compat/);
+});
+
+test('source installer installs luci-compat when the CBI module is missing', () => {
+    assert.match(runSourceDependencies({ cbiPresent: false, compatRegistered: false }), /add luci-compat/);
+});
+
+test('packages declare the luci-compat dependency required by the CBI pages', () => {
+    const makefile = fs.readFileSync(path.join(root, 'Makefile'), 'utf8');
+    const builder = fs.readFileSync(path.join(root, 'scripts/build-ipk.sh'), 'utf8');
+    assert.match(makefile, /DEPENDS:=.*\+luci-compat\b/);
+    assert.match(builder, /^DEPS=".*\bluci-compat\b/m);
+});

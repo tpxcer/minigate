@@ -9,6 +9,10 @@ dependency_ready() {
         openssl-util)
             command -v openssl >/dev/null 2>&1 && openssl version >/dev/null 2>&1
             ;;
+        luci-compat)
+            # 页面基于 CBI，由 luci-compat 提供；模块已存在时不依赖包数据库记录
+            [ -f "${MINIGATE_LUCI_DIR:-/usr/lib/lua/luci}/cbi.lua" ]
+            ;;
         *)
             return 1
             ;;
@@ -19,13 +23,13 @@ install_dependencies() {
     local p
     if command -v opkg >/dev/null 2>&1; then
         PKG="opkg"
-        for p in curl jsonfilter nftables nginx-mod-stream openssl-util; do
+        for p in curl jsonfilter nftables nginx-mod-stream openssl-util luci-compat; do
             dependency_ready "$p" && continue
             opkg list-installed 2>/dev/null | grep -q "^${p} " || { opkg update 2>/dev/null; opkg install "$p" 2>/dev/null; }
         done
     elif command -v apk >/dev/null 2>&1; then
         PKG="apk"
-        for p in curl jsonfilter nftables nginx-mod-stream openssl-util; do
+        for p in curl jsonfilter nftables nginx-mod-stream openssl-util luci-compat; do
             dependency_ready "$p" && continue
             apk info -e "$p" >/dev/null 2>&1 || apk add "$p" 2>/dev/null
         done

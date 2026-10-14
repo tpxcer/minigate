@@ -8,7 +8,7 @@ PKG_NAME="minigate"
 PKG_VERSION="2026.10.14-3"
 PKG_ARCH="all"
 PKG_FILE="${PKG_NAME}_${PKG_VERSION}_${PKG_ARCH}.ipk"
-DEPS="libc, luci-base, nginx-ssl, nginx-mod-stream, openssl-util, wget, curl, jsonfilter, coreutils-stat, nftables"
+DEPS="libc, luci-base, luci-compat, nginx-ssl, nginx-mod-stream, openssl-util, wget, curl, jsonfilter, coreutils-stat, nftables"
 
 WORK_DIR="$(mktemp -d)"
 
