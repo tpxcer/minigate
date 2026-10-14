@@ -51,16 +51,16 @@ function index()
     entry({"admin","services","minigate","log"}, template("minigate/log"), "日志", 50)
     entry({"admin","services","minigate","status"}, call("action_status")).leaf=true
     entry({"admin","services","minigate","get_log"}, call("action_get_log")).leaf=true
-    entry({"admin","services","minigate","acme_install"}, call("action_acme_install")).leaf=true
-    entry({"admin","services","minigate","acme_issue"}, call("action_acme_issue")).leaf=true
-    entry({"admin","services","minigate","ddns_sync"}, call("action_ddns_sync")).leaf=true
+    entry({"admin","services","minigate","acme_install"}, post("action_acme_install")).leaf=true
+    entry({"admin","services","minigate","acme_issue"}, post("action_acme_issue")).leaf=true
+    entry({"admin","services","minigate","ddns_sync"}, post("action_ddns_sync")).leaf=true
     entry({"admin","services","minigate","ddns_history"}, call("action_ddns_history")).leaf=true
     entry({"admin","services","minigate","proxy_access"}, call("action_proxy_access")).leaf=true
     entry({"admin","services","minigate","geo_lookup"}, call("action_geo_lookup")).leaf=true
     entry({"admin","services","minigate","lg_status"}, call("action_lg_status")).leaf=true
-    entry({"admin","services","minigate","lg_ban"}, call("action_lg_ban")).leaf=true
-    entry({"admin","services","minigate","lg_unban"}, call("action_lg_unban")).leaf=true
-    entry({"admin","services","minigate","lg_flush"}, call("action_lg_flush")).leaf=true
+    entry({"admin","services","minigate","lg_ban"}, post("action_lg_ban")).leaf=true
+    entry({"admin","services","minigate","lg_unban"}, post("action_lg_unban")).leaf=true
+    entry({"admin","services","minigate","lg_flush"}, post("action_lg_flush")).leaf=true
     entry({"admin","services","minigate","update_status"}, call("action_update_status")).leaf=true
     entry({"admin","services","minigate","update_auto"}, call("action_update_auto")).leaf=true
     entry({"admin","services","minigate","update_check"}, call("action_update_check")).leaf=true
@@ -224,6 +224,7 @@ end
 function action_get_log()
     local sys=require"luci.sys"; local s=luci.http.formvalue("source")or"all"
     local fs={ddns="/var/log/minigate-ddns.log",acme="/var/log/minigate-acme.log",proxy="/var/log/minigate-proxy.log /var/log/minigate-nginx-error.log"}
+    if not fs[s] then s="all" end
     local cmd=s=="all"and"cat /var/log/minigate-*.log 2>/dev/null|tail -200"or"cat "..(fs[s]or"").." 2>/dev/null|tail -200"
     luci.http.prepare_content("application/json"); luci.http.write_json({log=sys.exec(cmd)or""})
 end
@@ -246,6 +247,11 @@ end
 
 function action_ddns_sync()
     local sys=require"luci.sys"; local sec=luci.http.formvalue("section")or""
+    if sec~="" and (#sec>64 or not sec:match("^[%w_]+$") or require"luci.model.uci".cursor():get("minigate",sec)~="ddns") then
+        luci.http.status(400,"Bad Request")
+        luci.http.prepare_content("application/json"); luci.http.write_json({success=false,status="invalid",message="DDNS 记录参数无效"})
+        return
+    end
     if sec~=""then sys.call("/bin/sh /usr/lib/minigate/ddns.sh single "..shellquote(sec).." 2>&1")
     else sys.call("/bin/sh /usr/lib/minigate/ddns.sh force 2>&1") end
     local uci=require"luci.model.uci".cursor()
@@ -366,7 +372,7 @@ function action_proxy_access()
         limit = 5
     end
     -- 读取最近 500 条日志，按 IP 聚合
-    local raw = sys.exec("tail -n 500 /var/log/minigate-access.log 2>/dev/null") or ""
+    local raw = sys.exec("cat /var/log/minigate-access.log.1 /var/log/minigate-access.log 2>/dev/null | tail -n 500") or ""
     local visitors = {}  -- ip -> {last_time, domain, count, first_time}
     local order = {}     -- 保持顺序
 

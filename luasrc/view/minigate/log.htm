@@ -12,9 +12,10 @@
 var lt;
 var lu='<%=luci.dispatcher.build_url("admin/services/minigate/get_log")%>';
 function rl(){var s=document.getElementById('ls').value;var c=document.getElementById('lc');
-XHR.get(lu,{source:s},function(x,d){if(d&&d.log){c.textContent=d.log||'（暂无）';c.scrollTop=c.scrollHeight}else c.textContent='（无法读取）'})}
-function sa(){if(lt)clearInterval(lt);if(document.getElementById('ar').checked)lt=setInterval(rl,5000)}
+XHR.get(lu,{source:s},function(x,d){if(d&&typeof d.log==='string'){c.textContent=d.log||'（暂无）';c.scrollTop=c.scrollHeight}else c.textContent='（无法读取）'})}
+function sa(){if(lt)clearInterval(lt);if(document.getElementById('ar').checked)lt=setInterval(function(){if(!document.hidden)rl()},5000)}
 document.getElementById('ar').addEventListener('change',sa);
+document.addEventListener('visibilitychange',function(){if(!document.hidden&&document.getElementById('ar').checked)rl()});
 document.getElementById('ls').addEventListener('change',rl);
 rl();sa();
 </script>

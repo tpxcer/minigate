@@ -1,6 +1,13 @@
 local m,s,o
 local sys=require"luci.sys"
 
+local function esc(v)
+    v=tostring(v or "")
+    v=v:gsub("&","&amp;"):gsub("<","&lt;"):gsub(">","&gt;")
+    v=v:gsub('"',"&quot;"):gsub("'","&#39;")
+    return v
+end
+
 m=Map("minigate","MiniGate - 动态DNS","支持多域名、IPv4/IPv6双栈。保存后立即同步。需先启用全局开关。")
 
 m.on_after_commit=function(self)
@@ -85,15 +92,15 @@ o.cfgvalue=function(self,section)
     elseif st=="partial"then
         h='<span style="color:#ff9800">&#9888; 部分成功</span>'
     elseif st=="error"then
-        h='<span style="color:#f44336">&#10007; '..(msg~=""and msg or"异常")..'</span>'
+        h='<span style="color:#f44336">&#10007; '..esc(msg~=""and msg or"异常")..'</span>'
     else h='<span style="color:#999">未同步</span>' end
 
     -- 显示 IP 地址
-    if ip~=""then h=h..'<br><span style="font-size:11px;color:#888">A: '..ip..'</span>' end
-    if ip6~=""then h=h..'<br><span style="font-size:11px;color:#2196f3">AAAA: '..ip6..'</span>' end
-    if msg~=""and st~="error"then h=h..'<br><span style="font-size:11px;color:#888">'..msg..'</span>' end
-    if lu~=""then h=h..'<br><span style="font-size:11px;color:#888">更新: '..lu..'</span>' end
-    if ns~=""then h=h..'<br><span style="font-size:11px;color:#888">下次: '..ns..'</span>' end
+    if ip~=""then h=h..'<br><span style="font-size:11px;color:#888">A: '..esc(ip)..'</span>' end
+    if ip6~=""then h=h..'<br><span style="font-size:11px;color:#2196f3">AAAA: '..esc(ip6)..'</span>' end
+    if msg~=""and st~="error"then h=h..'<br><span style="font-size:11px;color:#888">'..esc(msg)..'</span>' end
+    if lu~=""then h=h..'<br><span style="font-size:11px;color:#888">更新: '..esc(lu)..'</span>' end
+    if ns~=""then h=h..'<br><span style="font-size:11px;color:#888">下次: '..esc(ns)..'</span>' end
 
     h=h..'<br><button class="cbi-button cbi-button-action" style="margin-top:4px;font-size:12px;padding:2px 10px" '
     h=h..'onclick="doSync(\''..section..'\',this)">手动同步</button>'
@@ -110,7 +117,25 @@ s=m:section(NamedSection,"global","global"); s.anonymous=true
 o=s:option(DummyValue,"_js"," "); o.rawhtml=true
 o.cfgvalue=function()
     local url=luci.dispatcher.build_url("admin/services/minigate/ddns_sync")
-    return'<script type="text/javascript">function doSync(s,b){b.disabled=true;b.textContent="同步中...";var e=document.getElementById("sr-"+s);e.textContent="";XHR.get("'..url..'",{section:s},function(x,d){b.disabled=false;b.textContent="手动同步";if(d&&d.success){e.innerHTML=\'<span style="color:#4caf50">\\u2713 \'+d.ip+(d.ip6?\' / \'+d.ip6:\'\')+\'</span>\';setTimeout(function(){location.reload()},1500)}else e.innerHTML=\'<span style="color:#f44336">\\u2717 失败</span>\'})}</script>'
+    return[[<script type="text/javascript">
+function doSync(s,b){
+    var e=document.getElementById("sr-"+s),done=false;
+    function show(ok,text){var span=document.createElement("span");span.style.color=ok?"#4caf50":"#f44336";span.textContent=text;e.textContent="";e.appendChild(span);}
+    function finish(x,d){
+        if(done)return;done=true;
+        b.disabled=false;b.textContent="手动同步";
+        if(d&&d.success){
+            show(true,"\u2713 "+[d.ip,d.ip6].filter(Boolean).join(" / "));
+            setTimeout(function(){location.reload()},1500);
+        }else{
+            show(false,"\u2717 "+((d&&d.message)||(d?"同步失败，查看日志":"请求失败，请检查网络后重试")));
+        }
+    }
+    b.disabled=true;b.textContent="同步中...";e.textContent="";
+    var p=XHR.post("]]..url..[[",{section:s},finish);
+    if(p&&typeof p.catch==="function")p.catch(function(){finish(null,null)});
+}
+</script>]]
 end
 
 return m

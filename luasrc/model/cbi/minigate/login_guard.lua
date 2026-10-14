@@ -83,7 +83,7 @@ o.cfgvalue = function()
     local initial_watching = '<div class="lg-empty">无</div>'
     if #watching_rows > 0 then
         initial_watching =
-            '<table class="lg-table"><thead><tr><th>IP 地址</th><th>归属地</th><th>失败次数</th><th>最近访问时间</th><th>距首次失败</th></tr></thead><tbody>' ..
+            '<table class="lg-table lg-table-watch"><thead><tr><th>IP 地址</th><th>归属地</th><th>失败次数</th><th>最近访问时间</th><th>距首次失败</th></tr></thead><tbody>' ..
             table.concat(watching_rows, "") ..
             '</tbody></table>'
     end
@@ -121,6 +121,22 @@ o.cfgvalue = function()
 :root:not([data-darkmode]) .lg-wrap{--lg-success:#78c98d;--lg-warning:#d7a64a;--lg-danger:#e58a84;--lg-muted:#9aa7b3;--lg-primary:#8e8add;--lg-surface:#171e26;--lg-surface-muted:#131a22;--lg-surface-alt:#19212a;--lg-surface-hover:#202a34;--lg-control:#111820;--lg-text:#d5dbe3;--lg-text-muted:#9aa7b3;--lg-border:rgba(148,163,184,.18);--lg-border-soft:rgba(148,163,184,.12);--lg-code-bg:#253142;--lg-danger-bg:#42303a;--lg-danger-text:#efb2b0;--lg-shadow:none}
 }
 @media(max-width:900px){.lg-summary{grid-template-columns:1fr}.lg-card{min-height:auto}.lg-input{width:100%;min-width:0}.lg-tools{width:100%}}
+@media(max-width:640px){
+.lg-table{min-width:0}.lg-table thead{display:none}
+.lg-table tbody tr{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 12px;padding:12px 14px;border-bottom:1px solid var(--lg-border-soft)}
+.lg-table tbody tr:nth-child(even){background:var(--lg-surface-alt)}
+.lg-table td{display:flex;align-items:center;justify-content:space-between;gap:12px;min-width:0;padding:2px 0;border:0!important;background:transparent!important;overflow-wrap:anywhere}
+.lg-table td:nth-child(1){justify-content:flex-start}
+.lg-table td:nth-child(n+3){grid-column:1/-1}
+.lg-table td:before{flex:0 0 auto;color:var(--lg-text-muted)}
+.lg-table-ban td:nth-child(2),.lg-table-watch td:nth-child(2){justify-content:flex-end}
+.lg-table-ban td:nth-child(3):before{content:"剩余时间"}
+.lg-table-ban td:nth-child(4){justify-content:flex-end}
+.lg-table-watch td:nth-child(3):before{content:"失败次数"}
+.lg-table-watch td:nth-child(4):before{content:"最近访问"}
+.lg-table-watch td:nth-child(5):before{content:"距首次失败"}
+.lg-tools .lg-btn{flex:1}
+}
 </style>
 
 <div class="lg-wrap">
@@ -181,6 +197,28 @@ var _lgGeoCache={};
 var _lgGeoPending={};
 var _lgBanLimit=5;
 var _lgWatchLimit=5;
+var _lgBanGen=0;
+var _lgWatchGen=0;
+var _lgReq=0;
+var _lgLoading=false;
+
+// LuCI 的 XHR 在网络错误时不会调用回调；统一回调一次，避免按钮和刷新卡住。
+function lgRequest(method,url,args,cb){
+    var done=false;
+    function finish(x,d){if(done)return;done=true;cb(x,d);}
+    var p=XHR[method](url,args,finish);
+    if(p&&typeof p.catch==='function')p.catch(function(){finish(null,null);});
+}
+
+// LuCI 把空 Lua 表编码成 {}，按空列表处理
+function lgList(value){
+    if(Array.isArray(value))return value;
+    return value&&typeof value==='object'&&Object.keys(value).length===0?[]:null;
+}
+
+function lgGeoHtml(loc){
+    return loc?'<span style="font-size:11px">'+lgEscHtml(loc)+'</span>':'<span style="color:'+lgColor('muted')+'">查询中...</span>';
+}
 
 function lgEscHtml(s){
     return String(s||'').replace(/[&<>"']/g,function(c){
@@ -201,11 +239,11 @@ function lgQueryGeo(ip,cb){
         return;
     }
     _lgGeoPending[ip]=[cb];
-    XHR.get(']] .. gu .. [[',{ip:ip},function(x,d){
+    lgRequest('get',']] .. gu .. [[',{ip:ip},function(x,d){
         var loc=(d&&d.geo)?d.geo:'未知';
         var list=_lgGeoPending[ip]||[];
         delete _lgGeoPending[ip];
-        _lgGeoCache[ip]=loc;
+        if(d&&d.geo)_lgGeoCache[ip]=loc;
         for(var i=0;i<list.length;i++)list[i](loc);
     });
 }
@@ -227,10 +265,11 @@ function lgQueryInitialWatchingGeo(){
         var ip=row.getAttribute('data-ip')||'';
         var idx=row.getAttribute('data-index')||'';
         if(!ip){setTimeout(next,0);return;}
+        var cached=!!_lgGeoCache[ip];
         lgQueryGeo(ip,function(loc){
             var ge=document.getElementById('lg-watch-geo-initial-'+idx);
-            if(ge)ge.innerHTML='<span style="font-size:11px">'+lgEscHtml(loc)+'</span>';
-            setTimeout(next,150);
+            if(ge)ge.innerHTML=lgGeoHtml(loc);
+            setTimeout(next,cached?0:150);
         });
     }
     next();
@@ -245,9 +284,9 @@ function fmtDuration(s){
 function lgUnban(ip,btn){
     if(!confirm('确认解封 '+ip+' ?'))return;
     btn.disabled=true; btn.textContent='...';
-    XHR.get(']] .. uu .. [[',{ip:ip},function(x,d){
+    lgRequest('post',']] .. uu .. [[',{ip:ip},function(x,d){
         if(d&&d.success){lgRefresh();}
-        else{btn.disabled=false;btn.textContent='解封';alert('失败');}
+        else{btn.disabled=false;btn.textContent='解封';alert((d&&d.error)||'解封失败，请刷新页面后重试');}
     });
 }
 
@@ -255,31 +294,33 @@ function lgManualBan(){
     var ip=document.getElementById('lg-ban-input').value.trim();
     if(!ip){alert('请输入 IP');return;}
     if(!ip.match(/^\d+\.\d+\.\d+\.\d+$/)){alert('IP 格式不对');return;}
-    XHR.get(']] .. bu .. [[',{ip:ip},function(x,d){
+    lgRequest('post',']] .. bu .. [[',{ip:ip},function(x,d){
         if(d&&d.success){
             document.getElementById('lg-ban-input').value='';
             lgRefresh();
-        }else alert('失败');
+        }else alert((d&&d.error)||'封禁失败，请刷新页面后重试');
     });
 }
 
 function lgFlushAll(){
     if(!confirm('确认清空所有封禁？此操作不可撤销。'))return;
-    XHR.get(']] .. fu .. [[',null,function(x,d){
+    lgRequest('post',']] .. fu .. [[',null,function(x,d){
         if(d&&d.success)lgRefresh();
+        else alert('清空失败，请刷新页面后重试');
     });
 }
 
 function lgRenderWatching(watching,threshold){
     var wEl=document.getElementById('lg-watching-list');
     if(!wEl)return;
-    watching=watching||[];
+    var gen=++_lgWatchGen;
+    watching=lgList(watching)||[];
     threshold=Number(threshold)||3;
     if(watching.length==0){
         wEl.innerHTML='<div class="lg-empty">无</div>';
         return;
     }
-    var h2='<table class="lg-table">';
+    var h2='<table class="lg-table lg-table-watch">';
     h2+='<thead><tr><th>IP 地址</th><th>归属地</th><th>失败次数</th><th>最近访问时间</th><th>距首次失败</th></tr></thead><tbody>';
     for(var j=0;j<watching.length;j++){
         var w=watching[j]||{};
@@ -291,7 +332,7 @@ function lgRenderWatching(watching,threshold){
         var color=pct>=66?lgColor('danger'):(pct>=33?lgColor('warning'):lgColor('muted'));
         h2+='<tr>';
         h2+='<td><code class="lg-ip">'+lgEscHtml(ip)+'</code></td>';
-        h2+='<td id="lg-watch-geo-'+j+'"><span style="color:'+lgColor('muted')+'">查询中...</span></td>';
+        h2+='<td id="lg-watch-geo-'+j+'">'+lgGeoHtml(_lgGeoCache[ip])+'</td>';
         h2+='<td><span style="color:'+color+';font-weight:bold">'+count+' / '+threshold+'</span></td>';
         h2+='<td>'+lgEscHtml(lastSeen)+'</td>';
         h2+='<td>'+fmtDuration(age)+'</td>';
@@ -302,16 +343,14 @@ function lgRenderWatching(watching,threshold){
     // 与总览“访问记录”保持一致：逐个查询归属地，避免并发太多。
     var qi=0;
     function nextWatchingGeo(){
+        if(gen!==_lgWatchGen)return;
+        while(qi<watching.length&&(!(watching[qi]||{}).ip||_lgGeoCache[watching[qi].ip]))qi++;
         if(qi>=watching.length)return;
         var idx=qi;qi++;
-        var row=watching[idx]||{};
-        if(!row.ip){
-            setTimeout(nextWatchingGeo,0);
-            return;
-        }
-        lgQueryGeo(row.ip,function(loc){
+        lgQueryGeo(watching[idx].ip,function(loc){
+            if(gen!==_lgWatchGen)return;
             var ge=document.getElementById('lg-watch-geo-'+idx);
-            if(ge) ge.innerHTML='<span style="font-size:11px">'+lgEscHtml(loc)+'</span>';
+            if(ge) ge.innerHTML=lgGeoHtml(loc);
             setTimeout(nextWatchingGeo,150);
         });
     }
@@ -337,30 +376,35 @@ function lgApplyStatus(d){
 
         // 已封禁列表
         var listEl=document.getElementById('lg-banned-list');
-        if(!d.banned||d.banned.length==0){
+        var banned=lgList(d.banned)||[];
+        var banGen=++_lgBanGen;
+        if(banned.length==0){
             listEl.innerHTML='<div class="lg-empty">暂无封禁</div>';
         }else{
-            var h='<table class="lg-table">';
+            var h='<table class="lg-table lg-table-ban">';
             h+='<thead><tr><th>IP 地址</th><th>归属地</th><th>剩余时间</th><th>操作</th></tr></thead><tbody>';
-            for(var i=0;i<d.banned.length;i++){
-                var b=d.banned[i];
+            for(var i=0;i<banned.length;i++){
+                var b=banned[i];
                 h+='<tr>';
                 h+='<td><code class="lg-ip lg-ip-danger">'+lgEscHtml(b.ip)+'</code></td>';
-                h+='<td id="lg-geo-'+i+'"><span style="color:'+lgColor('muted')+'">查询中...</span></td>';
+                h+='<td id="lg-geo-'+i+'">'+lgGeoHtml(_lgGeoCache[b.ip])+'</td>';
                 h+='<td>'+fmtDuration(b.remaining)+'</td>';
-                h+='<td><button class="lg-unban" onclick="lgUnban(\''+b.ip+'\',this)">解封</button></td>';
+                h+='<td><button class="lg-unban" onclick="lgUnban(\''+lgEscHtml(b.ip)+'\',this)">解封</button></td>';
                 h+='</tr>';
             }
             h+='</tbody></table>';
             listEl.innerHTML=h;
-            // 异步查归属地
+            // 异步查询未缓存的归属地；列表重绘后旧队列停止写入
             var qi=0;
             (function next(){
-                if(qi>=d.banned.length)return;
+                if(banGen!==_lgBanGen)return;
+                while(qi<banned.length&&_lgGeoCache[banned[qi].ip])qi++;
+                if(qi>=banned.length)return;
                 var idx=qi; qi++;
-                lgQueryGeo(d.banned[idx].ip,function(loc){
+                lgQueryGeo(banned[idx].ip,function(loc){
+                    if(banGen!==_lgBanGen)return;
                     var ge=document.getElementById('lg-geo-'+idx);
-                    if(ge) ge.innerHTML='<span style="font-size:11px">'+lgEscHtml(loc)+'</span>';
+                    if(ge) ge.innerHTML=lgGeoHtml(loc);
                     setTimeout(next,150);
                 });
             })();
@@ -376,7 +420,11 @@ function lgApplyStatus(d){
 }
 
 function lgRefresh(){
-    XHR.get(']] .. lu .. [[',{ban_limit:_lgBanLimit,watch_limit:_lgWatchLimit},function(x,d){
+    var req=++_lgReq;
+    _lgLoading=true;
+    lgRequest('get',']] .. lu .. [[',{ban_limit:_lgBanLimit,watch_limit:_lgWatchLimit},function(x,d){
+        if(req!==_lgReq)return;
+        _lgLoading=false;
         lgApplyStatus(d);
     });
 }
@@ -406,7 +454,9 @@ if(lgWatchLimitSel){
 lgApplyInitialWatchingLimit();
 lgQueryInitialWatchingGeo();
 lgRefresh();
-setInterval(lgRefresh,8000);
+// 页面在后台时暂停刷新，切回前台立即刷新
+setInterval(function(){if(!document.hidden&&!_lgLoading)lgRefresh();},8000);
+document.addEventListener('visibilitychange',function(){if(!document.hidden)lgRefresh();});
 </script>
 ]]
 end

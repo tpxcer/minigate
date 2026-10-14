@@ -17,11 +17,11 @@ THRESHOLD=$(uci -q get minigate.login_guard.threshold || echo "3")
 BANTIME=$(uci -q get minigate.login_guard.bantime || echo "43200")
 WINDOW=$(uci -q get minigate.login_guard.window || echo "600")
 
-DATA_DIR=/etc/minigate/login-guard
-RUN_DIR=/var/run/minigate/login-guard
+DATA_DIR="${MINIGATE_LG_DATA_DIR:-/etc/minigate/login-guard}"
+RUN_DIR="${MINIGATE_LG_RUN_DIR:-/var/run/minigate/login-guard}"
 BANS_FILE="$DATA_DIR/bans.txt"
 COUNTER_DIR="$RUN_DIR/counters"
-LOG_FILE=/var/log/minigate-login-guard.log
+LOG_FILE="${MINIGATE_LG_LOG:-/var/log/minigate-login-guard.log}"
 ACCESS_LOG=/var/log/minigate-access.log
 SET="login_banned_v4"
 TABLE="inet fw4"
@@ -64,6 +64,7 @@ is_whitelisted() {
 }
 
 # === 确保 nft set + drop rule 存在（fw4 reload 后自动重建） ===
+# 返回 0 表示刚重建过，调用方需要从持久化文件恢复封禁。
 ensure_nft() {
     local recreated=0
     if ! nft list set $TABLE $SET >/dev/null 2>&1; then
@@ -74,8 +75,9 @@ ensure_nft() {
         nft "insert rule $TABLE input ip saddr @$SET counter drop comment \"minigate-login-guard\"" 2>/dev/null
         recreated=1
     fi
-    [ $recreated -eq 1 ] && log "已创建 nft set + drop 规则"
-    return $recreated
+    [ $recreated -eq 1 ] || return 1
+    log "已创建 nft set + drop 规则"
+    return 0
 }
 
 # === 把 IP 加入封禁集合 + 持久化 ===
@@ -138,7 +140,7 @@ handle_failure() {
     if [ "$count" -ge "$THRESHOLD" ]; then
         # 加 ban 前再确认 nft 还在（fw4 可能重载）
         local ban_target="$ip"
-        ensure_nft && restore_bans
+        repair_nft
         ban_ip "$ban_target"
     fi
 }
@@ -169,13 +171,24 @@ access_log_loop() {
     done
 }
 
+repair_nft() {
+    ensure_nft && restore_bans
+    return 0
+}
+
+# 日志在内存 /var/log 中，长期遭遇爆破时需要限制大小
+trim_log() {
+    [ -f "$LOG_FILE" ] || return 0
+    [ "$(wc -c < "$LOG_FILE")" -gt 262144 ] || return 0
+    tail -n 500 "$LOG_FILE" > "${LOG_FILE}.tmp" && mv -f "${LOG_FILE}.tmp" "$LOG_FILE"
+}
+
 # === 后台 watchdog：每 5 分钟检查 nft 资源 ===
 watchdog_loop() {
     while true; do
         sleep 300
-        if ensure_nft; then
-            restore_bans
-        fi
+        repair_nft
+        trim_log
     done
 }
 
@@ -325,6 +338,10 @@ cmd_log() {
         logread -e minigate-lg | tail -n "$n"
     fi
 }
+
+if [ "${MINIGATE_LG_LIBRARY_ONLY:-0}" = "1" ]; then
+    return 0 2>/dev/null || exit 0
+fi
 
 # === 入口 ===
 case "${1:-help}" in

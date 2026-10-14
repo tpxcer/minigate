@@ -150,7 +150,7 @@ test('install requires an explicitly confirmed version and rejects a changed rel
 
 function overview() {
     const lua = fs.readFileSync(path.join(root, 'luasrc/model/cbi/minigate/general.lua'), 'utf8');
-    const js = lua.slice(lua.indexOf('var _updatePolling'), lua.indexOf('var limitSel')).replace(/\]\] \.\. (\w+) \.\. \[\[/g, '$1');
+    const js = lua.slice(lua.indexOf('function mgGet'), lua.indexOf('var limitSel')).replace(/\]\] \.\. (\w+) \.\. \[\[/g, '$1');
     const elements = new Map();
     const element = id => {
         if (!elements.has(id)) elements.set(id, { style: {}, className: '', textContent: '', disabled: false, checked: false, hidden: false, setAttribute() {}, focus() { document.activeElement = this; } });

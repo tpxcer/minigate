@@ -1,5 +1,6 @@
 #!/bin/sh
 set -u
+umask 077
 
 PURGE="${1:-0}"
 ROOT="${MINIGATE_ROOT:-}"
@@ -108,11 +109,12 @@ stop_process_tree() {
 }
 
 stop_services() {
-    local init pid
+    local init pid program_dir
     [ "$SKIP_SERVICES" = "1" ] && return 0
+    program_dir="$(root_path /usr/lib/minigate)"
 
-    if [ -z "$ROOT" ] && command -v pgrep >/dev/null 2>&1; then
-        for pid in $(pgrep -f '/usr/lib/minigate/login_guard.sh run' 2>/dev/null); do
+    if command -v pgrep >/dev/null 2>&1; then
+        for pid in $(pgrep -f "${program_dir}/login_guard.sh run" 2>/dev/null); do
             stop_process_tree "$pid"
         done
     fi
@@ -129,11 +131,14 @@ stop_services() {
             ''|*[!0-9]*) ;;
             *) kill "$pid" 2>/dev/null || true ;;
         esac
-        if command -v pgrep >/dev/null 2>&1; then
-            for pid in $(pgrep -f '/usr/lib/minigate/' 2>/dev/null); do
-                stop_process_tree "$pid"
-            done
-        fi
+    fi
+
+    # 只结束以 /bin/sh 直接运行的 minigate 脚本。BusyBox pgrep 只排除自身，
+    # 宽泛匹配会命中本脚本或 LuCI 启动卸载的外层 sh -c，导致卸载中途自杀。
+    if command -v pgrep >/dev/null 2>&1; then
+        for pid in $(pgrep -f "^/bin/sh ${program_dir}/" 2>/dev/null); do
+            [ "$pid" = "$$" ] || stop_process_tree "$pid"
+        done
     fi
 }
 
@@ -227,7 +232,7 @@ remove_runtime_files() {
         "$tmp_dir"/minigate_ddns_*.cache
 
     if [ "$PURGE" = "1" ]; then
-        rm -f "$(root_path /etc/config/minigate)" "$log_dir"/minigate-*.log
+        rm -f "$(root_path /etc/config/minigate)" "$log_dir"/minigate-*.log "$log_dir"/minigate-*.log.1
         rm -rf "$(root_path /etc/minigate)"
     fi
 }

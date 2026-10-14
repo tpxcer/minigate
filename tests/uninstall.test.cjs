@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 
 const root = path.resolve(__dirname, '..');
 const script = path.join(root, 'root/usr/lib/minigate/uninstall.sh');
@@ -30,6 +30,7 @@ function fixture() {
     write(dir, 'usr/lib/lua/luci/i18n/minigate.zh-cn.lmo');
     write(dir, 'usr/lib/lua/luci/controller/keep.lua');
     write(dir, 'var/log/minigate-access.log', 'access-log');
+    write(dir, 'var/log/minigate-access.log.1', 'rotated-access-log');
     write(dir, 'var/run/minigate/socket');
     write(dir, 'var/run/minigate-nginx.pid', '123');
     write(dir, 'tmp/minigate-update-state.json', '{}');
@@ -81,10 +82,94 @@ test('purge uninstall also removes configuration, certificates, bans and logs', 
     const dir = fixture();
     const result = run(dir, '1');
     assert.equal(result.status, 0, result.stderr);
-    for (const relative of ['etc/config/minigate', 'etc/minigate', 'var/log/minigate-access.log', 'usr/lib/minigate']) {
+    for (const relative of ['etc/config/minigate', 'etc/minigate', 'var/log/minigate-access.log', 'var/log/minigate-access.log.1', 'usr/lib/minigate']) {
         assert.equal(fs.existsSync(path.join(dir, relative)), false, relative);
     }
     assert.equal(fs.existsSync(path.join(dir, 'usr/lib/lua/luci/controller/keep.lua')), true);
+});
+
+// BusyBox pgrep 只排除自身，不像 macOS 那样默认排除祖先进程。
+function busyboxPgrep(dir) {
+    const shim = write(dir, 'test-bin/pgrep', `#!/bin/sh
+self=$$
+case "$1" in
+    -f) ps -A -o pid= -o ppid= -o args= | awk -v self="$self" -v re="$2" '
+            { pid=$1; ppid=$2; if (pid == self || ppid == self) next; $1=""; $2=""; sub(/^ +/, ""); if ($0 ~ re) print pid }' ;;
+    -P) ps -A -o pid= -o ppid= | awk -v self="$self" -v parent="$2" '$2 == parent && $1 != self { print $1 }' ;;
+esac
+`);
+    fs.chmodSync(shim, 0o755);
+    return path.dirname(shim);
+}
+
+function startFakeService(dir) {
+    const service = write(dir, 'usr/lib/minigate/fake-service.sh', 'while :; do sleep 1; done\n');
+    const child = spawn('/bin/sh', [service], { detached: true, stdio: 'ignore' });
+    child.unref();
+    return child.pid;
+}
+
+function alive(pid) {
+    try {
+        process.kill(pid, 0);
+        return true;
+    } catch (error) {
+        return false;
+    }
+}
+
+async function waitFor(check, timeout = 8000) {
+    const started = Date.now();
+    while (Date.now() - started < timeout) {
+        if (check()) return true;
+        await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    return check();
+}
+
+function serviceEnv(dir) {
+    return {
+        ...process.env,
+        PATH: `${busyboxPgrep(dir)}:${process.env.PATH}`,
+        MINIGATE_ROOT: dir,
+        MINIGATE_SKIP_PACKAGES: '1',
+        MINIGATE_SKIP_SERVICES: '0'
+    };
+}
+
+test('uninstall run directly from the program directory stops services without killing itself', async () => {
+    const dir = fixture();
+    const installed = write(dir, 'usr/lib/minigate/uninstall.sh', fs.readFileSync(script, 'utf8'));
+    const service = startFakeService(dir);
+    const result = spawnSync('/bin/sh', [installed, '0'], { encoding: 'utf8', env: serviceEnv(dir) });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(fs.existsSync(path.join(dir, 'usr/lib/minigate')), false);
+    assert.equal(fs.existsSync(path.join(dir, 'usr/lib/lua/luci/controller/minigate.lua')), false);
+    assert.equal(fs.readFileSync(path.join(dir, 'etc/config/minigate'), 'utf8'), 'config-data');
+    assert.ok(await waitFor(() => !alive(service)), 'running minigate script must be stopped');
+});
+
+test('uninstall started like LuCI survives its own sh -c launcher', async () => {
+    const dir = fixture();
+    write(dir, 'usr/lib/minigate/uninstall.sh', fs.readFileSync(script, 'utf8'));
+    const service = startFakeService(dir);
+    const status = path.join(dir, 'uninstall.status');
+    const launcher = `runner=$(mktemp "${dir}/tmp/minigate-uninstall.XXXXXX") && cp "${dir}/usr/lib/minigate/uninstall.sh" "$runner" && chmod 700 "$runner" && ( ( /bin/sh "$runner" 0; echo $? > "${status}"; rm -f "$runner" ) >/dev/null 2>&1 & )`;
+    const result = spawnSync('/bin/sh', ['-c', launcher], { encoding: 'utf8', env: serviceEnv(dir) });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.ok(await waitFor(() => fs.existsSync(status) && fs.readFileSync(status, 'utf8').trim() !== ''), 'uninstall did not finish');
+    assert.equal(fs.readFileSync(status, 'utf8').trim(), '0');
+    assert.equal(fs.existsSync(path.join(dir, 'usr/lib/minigate')), false);
+    assert.equal(fs.existsSync(path.join(dir, 'usr/lib/lua/luci/view/minigate')), false);
+    assert.equal(fs.readFileSync(path.join(dir, 'etc/minigate/certs/site.pem'), 'utf8'), 'certificate-data');
+    assert.ok(await waitFor(() => !alive(service)), 'running minigate script must be stopped');
+});
+
+test('preserved uninstall data is written with a private umask', () => {
+    const source = fs.readFileSync(script, 'utf8');
+    assert.match(source, /^umask 077$/m);
 });
 
 test('invalid purge mode is rejected before files are changed', () => {

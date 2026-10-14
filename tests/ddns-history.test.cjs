@@ -178,6 +178,41 @@ test('Cloudflare updater distinguishes unchanged records from authoritative chan
     assert.equal(failure.stdout.trim(), 'false');
 });
 
+test('Cloudflare token stays out of curl arguments and every API call is time-bounded', () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'minigate-cf-token-'));
+    const calls = path.join(tempDir, 'calls.log');
+    const command = `
+        set -u
+        export MINIGATE_DDNS_LIBRARY_ONLY=1
+        . ${JSON.stringify(ddnsScript)}
+        curl() { printf 'args %s\\n' "\$*" >> ${JSON.stringify(calls)}; sed 's/^/stdin /' >> ${JSON.stringify(calls)}; printf '{}'; }
+        jsonfilter() { cat >/dev/null; [ "\${2:-}" = '$.success' ] && printf 'true\\n'; return 0; }
+        cf_update zone secret-token example.com 198.51.100.20 A
+    `;
+    const result = spawnSync('/bin/sh', ['-c', command], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.equal(result.stdout.trim(), 'changed');
+    const lines = readRows(calls);
+    const args = lines.filter(line => line.startsWith('args '));
+    assert.equal(args.length, 2, 'list + create');
+    for (const line of args) {
+        assert.doesNotMatch(line, /secret-token/);
+        assert.match(line, /--max-time \d+/);
+        assert.match(line, /-H @-/);
+    }
+    assert.equal(lines.filter(line => line === 'stdin Authorization: Bearer secret-token').length, 2);
+});
+
+test('scheduled and manual DDNS runs share section names and serialize with a lock', () => {
+    const source = fs.readFileSync(ddnsScript, 'utf8');
+    assert.match(source, /uci -q -X show minigate \| grep '=ddns\$'/);
+    assert.match(source, /if \[ "\$1" = "single" \] && \[ -n "\$2" \]; then\n    lock_ddns wait/);
+    assert.match(source, /elif ! lock_ddns; then/);
+    for (const line of source.split('\n').filter(item => /\bcurl -[46]/.test(item))) {
+        assert.match(line, /--max-time \d+/, line.trim());
+    }
+});
+
 test('successful Cloudflare changes refresh local DNS caches once', () => {
     const scenario = runUpdateScenario({ cfResult: 'changed' });
     assert.equal(scenario.result.status, 0, scenario.result.stderr || scenario.result.stdout);

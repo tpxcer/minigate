@@ -84,14 +84,22 @@ o.cfgvalue=function()
 <select id="sd" style="padding:5px 10px;border-radius:4px;border:1px solid #ccc;min-width:250px">]]..
 (opts~=""and opts or'<option value="">请先配置动态DNS</option>')..[[</select>
 <button class="cbi-button cbi-button-apply" id="bs" onclick="doS()">立即签发 / 续期</button></div>
-<div id="ap" style="margin-top:12px;display:none"><div style="background:#f0f0f0;border-radius:4px;padding:10px 15px;font-size:13px"><span style="display:inline-block;animation:sp 1s linear infinite;margin-right:8px">&#9203;</span><span id="am">处理中...</span></div></div>
-<div id="ar" style="margin-top:12px;display:none"><div id="ai" style="border-radius:4px;padding:10px 15px;font-size:13px"></div></div>
-<style>@keyframes sp{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}</style>
+<div id="ap" class="mg-acme-note" style="display:none"><span style="display:inline-block;animation:sp 1s linear infinite;margin-right:8px">&#9203;</span><span id="am">处理中...</span></div>
+<div id="ar" style="display:none"><div id="ai" class="mg-acme-note" role="status"></div></div>
+<style>@keyframes sp{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+.mg-acme-note{margin-top:12px;border-radius:4px;padding:10px 15px;font-size:13px;line-height:1.6;background:rgba(127,127,127,.12);border:1px solid rgba(127,127,127,.2)}
+.mg-acme-note.ok{background:rgba(47,158,68,.12);border-color:rgba(47,158,68,.32);color:#2e7d32}
+.mg-acme-note.fail{background:rgba(224,49,49,.1);border-color:rgba(224,49,49,.3);color:#c62828}
+:root[data-darkmode="true"] .mg-acme-note.ok{color:#78c98d}
+:root[data-darkmode="true"] .mg-acme-note.fail{color:#e58a84}
+@media(prefers-color-scheme:dark){:root:not([data-darkmode]) .mg-acme-note.ok{color:#78c98d}:root:not([data-darkmode]) .mg-acme-note.fail{color:#e58a84}}
+</style>
 <script type="text/javascript">
 function sP(m){document.getElementById('ap').style.display='block';document.getElementById('ar').style.display='none';document.getElementById('am').textContent=m}
-function sR(ok,m){document.getElementById('ap').style.display='none';document.getElementById('ar').style.display='block';var e=document.getElementById('ai');e.style.background=ok?'#e8f5e9':'#ffebee';e.style.color=ok?'#2e7d32':'#c62828';e.textContent=m}
-function doI(){document.getElementById('bi').disabled=true;sP('下载安装中（约30秒）...');XHR.get(']]..iu..[[',null,function(x,d){document.getElementById('bi').disabled=false;d?sR(d.success,d.message):sR(false,'失败');if(d&&d.success)setTimeout(function(){location.reload()},2000)})}
-function doS(){var d=document.getElementById('sd').value;if(!d){sR(false,'请选择域名');return}document.getElementById('bs').disabled=true;sP('签发 '+d+'（约1-2分钟）...');XHR.get(']]..su..[[',{domain:d},function(x,r){document.getElementById('bs').disabled=false;r?sR(r.success,r.message):sR(false,'超时');if(r&&r.success)setTimeout(function(){location.reload()},2000)})}
+function sR(ok,m){document.getElementById('ap').style.display='none';document.getElementById('ar').style.display='block';var e=document.getElementById('ai');e.className='mg-acme-note '+(ok?'ok':'fail');e.textContent=m}
+function acmePost(url,args,cb){var done=false;function finish(x,d){if(done)return;done=true;cb(d)}var p=XHR.post(url,args,finish);if(p&&typeof p.catch==='function')p.catch(function(){finish(null,null)})}
+function doI(){document.getElementById('bi').disabled=true;sP('下载安装中（约30秒）...');acmePost(']]..iu..[[',null,function(d){document.getElementById('bi').disabled=false;d?sR(d.success,d.message):sR(false,'请求未完成：安装可能仍在后台进行，请稍后刷新页面查看 acme.sh 状态');if(d&&d.success)setTimeout(function(){location.reload()},2000)})}
+function doS(){var d=document.getElementById('sd').value;if(!d){sR(false,'请选择域名');return}document.getElementById('bs').disabled=true;sP('签发 '+d+'（约1-2分钟）...');acmePost(']]..su..[[',{domain:d},function(r){document.getElementById('bs').disabled=false;r?sR(r.success,r.message):sR(false,'请求超时：签发可能仍在后台进行，请稍后刷新页面查看证书状态');if(r&&r.success)setTimeout(function(){location.reload()},2000)})}
 </script>]]
 end
 

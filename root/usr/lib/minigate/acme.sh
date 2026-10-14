@@ -1,8 +1,9 @@
 #!/bin/sh
-ACME_HOME="/etc/minigate/acme/data"
+ACME_HOME="${MINIGATE_ACME_HOME:-/etc/minigate/acme/data}"
 ACME_BIN="${ACME_HOME}/acme.sh"
-CERT_DIR="/etc/minigate/certs"
-LOGFILE="/var/log/minigate-acme.log"
+CERT_DIR="${MINIGATE_CERT_DIR:-/etc/minigate/certs}"
+LOGFILE="${MINIGATE_ACME_LOG:-/var/log/minigate-acme.log}"
+PROXY_SCRIPT="${MINIGATE_PROXY_SCRIPT:-/usr/lib/minigate/proxy.sh}"
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [ACME] $*" >> "$LOGFILE"; }
 
@@ -32,7 +33,7 @@ keep_existing_cert_ok() {
         uci -q set minigate.acme.cert_expiry="$expiry"
         uci -q set minigate.acme.last_error="$reason"
         uci commit minigate
-        [ -f /usr/lib/minigate/proxy.sh ] && /bin/sh /usr/lib/minigate/proxy.sh reload 2>/dev/null
+        [ -f "$PROXY_SCRIPT" ] && /bin/sh "$PROXY_SCRIPT" reload 2>/dev/null
         return 0
     fi
     return 1
@@ -144,7 +145,7 @@ do_issue() {
             local base=$(echo "$domain" | sed 's/^\*\.//')
             [ ! -e "${CERT_DIR}/${base}" ] && ln -sf "${safe}" "${CERT_DIR}/${base}"
         fi
-        [ -f /usr/lib/minigate/proxy.sh ] && /bin/sh /usr/lib/minigate/proxy.sh reload 2>/dev/null
+        [ -f "$PROXY_SCRIPT" ] && /bin/sh "$PROXY_SCRIPT" reload 2>/dev/null
         return 0
     else
         keep_existing_cert_ok "$domain" "签发失败 (exit=$ret)" && return 0
@@ -152,6 +153,28 @@ do_issue() {
     fi
 }
 
-do_renew() { do_install || return 1; log "续期..."; "$ACME_BIN" --home "$ACME_HOME" --renew-all --server letsencrypt >> "$LOGFILE" 2>&1; log "完成"; }
+certs_fingerprint() {
+    cat "$CERT_DIR"/*/fullchain.pem 2>/dev/null | md5sum | cut -d' ' -f1
+}
+
+do_renew() {
+    local before domain cert
+    do_install || return 1
+    before=$(certs_fingerprint)
+    log "续期..."
+    "$ACME_BIN" --home "$ACME_HOME" --renew-all --server letsencrypt >> "$LOGFILE" 2>&1
+    log "完成"
+    # acme.sh 只替换证书文件，运行中的 Nginx 必须重载才会使用新证书。
+    [ "$(certs_fingerprint)" = "$before" ] && return 0
+    log "证书已更新，重载反向代理"
+    domain=$(uci -q get minigate.acme.last_domain)
+    cert="$(cert_path_for_domain "$domain")"
+    if [ -n "$domain" ] && [ -f "$cert" ]; then
+        uci -q set minigate.acme.cert_expiry="$(cert_expiry "$cert")"
+        uci commit minigate
+    fi
+    [ -f "$PROXY_SCRIPT" ] && /bin/sh "$PROXY_SCRIPT" reload 2>/dev/null
+    return 0
+}
 
 case "${1:-issue}" in install) do_install;; issue) do_issue "$2";; renew) do_renew;; *) echo "用法: $0 {install|issue [域名]|renew}";; esac

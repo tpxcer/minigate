@@ -10,6 +10,7 @@ NGINX_ERROR_LOG="${MINIGATE_NGINX_ERROR_LOG:-/var/log/minigate-nginx-error.log}"
 ACCESS_LOG="${MINIGATE_ACCESS_LOG:-/var/log/minigate-access.log}"
 SOCKET_DIR="${MINIGATE_SOCKET_DIR:-/var/run/minigate}"
 STREAM_MODULE="${MINIGATE_STREAM_MODULE:-/usr/lib/nginx/modules/ngx_stream_module.so}"
+ACCESS_LOG_MAX="${MINIGATE_ACCESS_LOG_MAX:-1048576}"
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [PROXY] $*" >> "$LOGFILE"; }
 
@@ -427,10 +428,26 @@ do_reload() {
     fi
 }
 
+# /var/log 在内存中且 nginx 不会自行轮转。访问日志保留最近记录到 .1 后原地清空：
+# nginx 以追加方式继续写入，登录防护的 tail -f 从头读取新内容，不会重放旧记录。
+trim_logs() {
+    local log_file
+    if [ -f "$ACCESS_LOG" ] && [ "$(wc -c < "$ACCESS_LOG")" -gt "$ACCESS_LOG_MAX" ]; then
+        tail -n 1000 "$ACCESS_LOG" > "${ACCESS_LOG}.1.tmp" && mv -f "${ACCESS_LOG}.1.tmp" "${ACCESS_LOG}.1"
+        : > "$ACCESS_LOG"
+    fi
+    for log_file in "$NGINX_ERROR_LOG" "$LOGFILE"; do
+        [ -f "$log_file" ] && [ "$(wc -c < "$log_file")" -gt 262144 ] || continue
+        tail -n 300 "$log_file" > "${log_file}.tmp" && cat "${log_file}.tmp" > "$log_file"
+        rm -f "${log_file}.tmp"
+    done
+}
+
 case "$1" in
     start) do_start ;;
     stop) do_stop ;;
     reload) do_reload ;;
     test) prepare_config ;;
-    *) echo "用法: $0 {start|stop|reload|test}" ;;
+    trim-logs) trim_logs ;;
+    *) echo "用法: $0 {start|stop|reload|test|trim-logs}" ;;
 esac

@@ -39,6 +39,7 @@ start() {
     echo "*/5 * * * * /bin/sh /usr/lib/minigate/ddns.sh" >> /etc/crontabs/root
     echo "0 3 * * * /bin/sh /usr/lib/minigate/acme.sh renew" >> /etc/crontabs/root
     echo "*/2 * * * * /bin/sh /usr/lib/minigate/geofence.sh scan" >> /etc/crontabs/root
+    echo "*/10 * * * * /bin/sh /usr/lib/minigate/proxy.sh trim-logs" >> /etc/crontabs/root
     /etc/init.d/cron restart 2>/dev/null
     logger -t minigate "已启动"
 }

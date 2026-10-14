@@ -100,7 +100,20 @@ o.cfgvalue = function()
 :root:not([data-darkmode]) .mg-map{--mg-danger:#e58a84;--mg-danger-hover:rgba(229,138,132,.1);--mg-danger-border:rgba(229,138,132,.45)}
 }
 @media(max-width:900px){.mg-status-grid{grid-template-columns:1fr}.mg-card{min-height:auto}}
-@media(max-width:640px){.mg-page-head{flex-direction:column;gap:12px}.mg-title-action{width:100%;margin-top:0}.mg-uninstall-trigger{width:100%}.mg-modal{padding:12px}.mg-modal-dialog{max-height:88vh}.mg-modal-actions{display:grid;grid-template-columns:1fr 1fr}.mg-modal-actions button{width:100%;min-width:0}}
+@media(max-width:640px){.mg-page-head{flex-direction:column;gap:12px}.mg-title-action{width:100%;margin-top:0}.mg-uninstall-trigger{width:100%}.mg-modal{padding:12px}.mg-modal-dialog{max-height:88vh}.mg-modal-actions{display:grid;grid-template-columns:1fr 1fr}.mg-modal-actions button{width:100%;min-width:0}
+.mg-table{min-width:0}.mg-table thead{display:none}
+.mg-table tbody tr{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 12px;padding:12px 14px;border-bottom:1px solid var(--mg-border-soft)}
+.mg-table tbody tr:nth-child(even){background:var(--mg-surface-alt)}
+.mg-table td{display:flex;align-items:center;justify-content:space-between;gap:12px;min-width:0;padding:2px 0;border:0!important;background:transparent!important;overflow-wrap:anywhere}
+.mg-table td:nth-child(2){order:1;justify-content:flex-start}
+.mg-table td:nth-child(1){order:2;justify-content:flex-end}
+.mg-table td:nth-child(n+3){order:3;grid-column:1/-1}
+.mg-table td:nth-child(3):before{content:"归属地"}
+.mg-table td:nth-child(4):before{content:"最后访问"}
+.mg-table td:nth-child(5):before{content:"域名"}
+.mg-table td:nth-child(6):before{content:"次数"}
+.mg-table td:before{flex:0 0 auto;color:var(--mg-text-muted)}
+}
 </style>
 
 <div class="mg-wrap">
@@ -194,8 +207,28 @@ o.cfgvalue = function()
 <script type="text/javascript">
 var _geoCache={};
 var _geoPending={};
-var _visitorLimit=localStorage.getItem('mgVisitorLimit')||'5';
+var _visitorLimit='5';
+var _visitorGen=0;
+var _visitorReq=0;
+var _visitorsLoading=false;
+var _statusLoading=false;
+var _statusLoaded=false;
+try{_visitorLimit=localStorage.getItem('mgVisitorLimit')||'5';}catch(e){}
 if(_visitorLimit!='5'&&_visitorLimit!='20'&&_visitorLimit!='50')_visitorLimit='5';
+
+// LuCI 的 XHR.get 在网络错误时不会调用回调；统一回调一次，避免按钮和轮询卡住。
+function mgGet(url,args,cb){
+    var done=false;
+    function finish(x,d){if(done)return;done=true;cb(x,d);}
+    var p=XHR.get(url,args,finish);
+    if(p&&typeof p.catch==='function')p.catch(function(){finish(null,null);});
+}
+
+// LuCI 把空 Lua 表编码成 {}，按空列表处理；其他非数组值视为读取失败。
+function mgList(value){
+    if(Array.isArray(value))return value;
+    return value&&typeof value==='object'&&Object.keys(value).length===0?[]:null;
+}
 
 function escHtml(s){
     return String(s||'').replace(/[&<>"']/g,function(c){
@@ -222,29 +255,44 @@ function queryGeo(ip,cb){
         return;
     }
     _geoPending[ip]=[cb];
-    XHR.get(']] .. gu .. [[',{ip:ip},function(x,d){
+    mgGet(']] .. gu .. [[',{ip:ip},function(x,d){
         var loc=(d&&d.geo)?d.geo:'未知';
         var list=_geoPending[ip]||[];
         delete _geoPending[ip];
-        _geoCache[ip]=loc;
+        if(d&&d.geo)_geoCache[ip]=loc;
         for(var i=0;i<list.length;i++)list[i](loc);
     });
 }
 
-function loadVisitors(){
-    XHR.get(']] .. au .. [[',{limit:_visitorLimit},function(x,d){
+function mgGeoHtml(loc){
+    return loc?'<span style="font-size:11px">'+escHtml(loc)+'</span>':'<span style="color:'+mgColor('muted')+'">查询中...</span>';
+}
+
+function loadVisitors(force){
+    if(_visitorsLoading&&!force)return;
+    _visitorsLoading=true;
+    var req=++_visitorReq;
+    mgGet(']] .. au .. [[',{limit:_visitorLimit},function(x,d){
+        if(req!==_visitorReq)return;
+        _visitorsLoading=false;
         var el=document.getElementById('mg-v-list');
         var ct=document.getElementById('mg-v-count');
-        if(!d||!d.visitors||d.visitors.length===0){
+        var visitors=mgList(d&&d.visitors);
+        if(!visitors){
+            if(!el.querySelector('table'))el.innerHTML='<div class="mg-empty">访问记录读取失败，稍后自动重试</div>';
+            return;
+        }
+        var gen=++_visitorGen;
+        if(visitors.length===0){
             el.innerHTML='<div class="mg-empty">暂无访问记录</div>';
             ct.textContent='';
             return;
         }
-        ct.textContent='('+d.visitors.length+' 个IP)';
+        ct.textContent='('+visitors.length+' 个IP)';
         var h='<table class="mg-table">';
         h+='<thead><tr><th>状态</th><th>IP 地址</th><th>归属地</th><th>最后访问</th><th>域名</th><th>次数</th></tr></thead><tbody>';
-        for(var i=0;i<d.visitors.length;i++){
-            var v=d.visitors[i];
+        for(var i=0;i<visitors.length;i++){
+            var v=visitors[i];
             var dot=v.online
                 ?'<span class="mg-dot on" title="在线"></span>'
                 :'<span class="mg-dot" title="离线"></span>';
@@ -252,7 +300,7 @@ function loadVisitors(){
             h+='<tr>';
             h+='<td><span class="mg-status">'+dot+stxt+'</span></td>';
             h+='<td><code class="mg-ip">'+escHtml(v.ip)+'</code></td>';
-            h+='<td id="geo-'+i+'"><span style="color:'+mgColor('muted')+'">查询中...</span></td>';
+            h+='<td id="geo-'+i+'">'+mgGeoHtml(_geoCache[v.ip])+'</td>';
             h+='<td style="white-space:nowrap">'+escHtml(fmtT(v.last_time))+'</td>';
             h+='<td>'+escHtml(v.domain)+'</td>';
             h+='<td>'+escHtml(v.count)+'</td>';
@@ -260,14 +308,17 @@ function loadVisitors(){
         }
         h+='</tbody></table>';
         el.innerHTML=h;
-        // 逐个查询归属地（避免并发太多）
+        // 逐个查询未缓存的归属地（避免并发太多）；表格重绘后旧队列停止写入
         var qi=0;
         function nextGeo(){
-            if(qi>=d.visitors.length)return;
+            if(gen!==_visitorGen)return;
+            while(qi<visitors.length&&_geoCache[visitors[qi].ip])qi++;
+            if(qi>=visitors.length)return;
             var idx=qi;qi++;
-            queryGeo(d.visitors[idx].ip,function(loc){
+            queryGeo(visitors[idx].ip,function(loc){
+                if(gen!==_visitorGen)return;
                 var ge=document.getElementById('geo-'+idx);
-                if(ge)ge.innerHTML='<span style="font-size:11px">'+escHtml(loc)+'</span>';
+                if(ge)ge.innerHTML=mgGeoHtml(loc);
                 setTimeout(nextGeo,150);
             });
         }
@@ -404,7 +455,7 @@ function mgRenderUpdate(d){
 
 function mgLoadUpdate(){
     var keepPolling=_updatePolling;
-    XHR.get(']] .. uu .. [[',null,function(x,d){
+    mgGet(']] .. uu .. [[',null,function(x,d){
         _updatePolling=false;
         if(d){
             mgRenderUpdate(d);
@@ -419,7 +470,7 @@ function mgCheckUpdate(){
     var check=document.getElementById('mg-u-check');
     check.disabled=true;
     document.getElementById('mg-u-message').textContent='正在连接 GitHub...';
-    XHR.get(']] .. cu .. [[',null,function(x,d){
+    mgGet(']] .. cu .. [[',null,function(x,d){
         check.disabled=false;
         mgRenderUpdate(d||{success:false,message:'检查失败，请稍后重试'});
     });
@@ -429,7 +480,7 @@ function mgAutoCheckUpdate(){
     var check=document.getElementById('mg-u-check');
     check.disabled=true;
     document.getElementById('mg-u-message').textContent='正在自动检查更新...';
-    XHR.get(']] .. xu .. [[',null,function(x,d){
+    mgGet(']] .. xu .. [[',null,function(x,d){
         check.disabled=false;
         mgRenderUpdate(d||{success:false,message:'自动检查失败，可稍后手动重试'});
     });
@@ -519,13 +570,31 @@ if(limitSel){
     limitSel.value=_visitorLimit;
     limitSel.onchange=function(){
         _visitorLimit=this.value;
-        localStorage.setItem('mgVisitorLimit',_visitorLimit);
-        loadVisitors();
+        try{localStorage.setItem('mgVisitorLimit',_visitorLimit);}catch(e){}
+        loadVisitors(true);
     };
 }
 
-XHR.poll(6,']] .. su .. [[',null,function(x,d){
-if(!d)return;
+function mgLoadStatus(){
+    if(_statusLoading||document.hidden)return;
+    _statusLoading=true;
+    mgGet(']] .. su .. [[',null,function(x,d){
+        _statusLoading=false;
+        if(!d){
+            if(!_statusLoaded){
+                var failed='<span style="color:'+mgColor('danger')+'">读取失败</span>';
+                document.getElementById('mg-d1').innerHTML=failed;
+                document.getElementById('mg-a1').innerHTML=failed;
+                document.getElementById('mg-p1').innerHTML=failed;
+            }
+            return;
+        }
+        _statusLoaded=true;
+        mgRenderStatus(d);
+    });
+}
+
+function mgRenderStatus(d){
 var d1=document.getElementById('mg-d1'),d2=document.getElementById('mg-d2');
 var card=document.getElementById('mg-ddns-card');
 if(d.ddns_list&&d.ddns_list.length>0){
@@ -567,10 +636,18 @@ var v6tag=r.ipv6_listen=='1'?' <span style="color:'+mgColor('info')+';font-size:
 pinfo+='<div><span class="mg-link">'+escHtml(url)+'</span>'+v6tag+' \u2192 '+escHtml(r.target)+'</div>';
 }}else if(d.proxy_running){pinfo='Nginx \u8fd0\u884c\u4e2d';}
 p2.innerHTML=pinfo;
-});
+}
 
+// 页面在后台时暂停轮询，切回前台立即刷新
+mgLoadStatus();
+setInterval(mgLoadStatus,6000);
 loadVisitors();
-setInterval(loadVisitors,15000);
+setInterval(function(){if(!document.hidden)loadVisitors();},15000);
+document.addEventListener('visibilitychange',function(){
+    if(document.hidden)return;
+    mgLoadStatus();
+    loadVisitors();
+});
 mgAutoCheckUpdate();
 </script>
 ]] end
