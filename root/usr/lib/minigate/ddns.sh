@@ -1,7 +1,10 @@
 #!/bin/sh
-LOGFILE="/var/log/minigate-ddns.log"
+LOGFILE="${MINIGATE_DDNS_LOG:-/var/log/minigate-ddns.log}"
 HISTORY_DIR="${MINIGATE_HISTORY_DIR:-/etc/minigate/ddns-history}"
 HISTORY_WINDOW="${MINIGATE_HISTORY_WINDOW:-86400}"
+CACHE_DIR="${MINIGATE_CACHE_DIR:-/tmp}"
+SINGBOX_CONFIG="${MINIGATE_SINGBOX_CONFIG:-/opt/open-box/etc/config.json}"
+CLASH_API_URL="${MINIGATE_CLASH_API_URL:-http://127.0.0.1:9095}"
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [DDNS] $*" >> "$LOGFILE"; }
 trim_log() { [ -f "$LOGFILE" ] && [ "$(wc -l < "$LOGFILE")" -gt 300 ] && { tail -n 150 "$LOGFILE" > "${LOGFILE}.tmp"; mv "${LOGFILE}.tmp" "$LOGFILE"; }; }
@@ -83,6 +86,55 @@ record_ip_history() {
     fi
 }
 
+# 只清运行中 DNS 缓存，不重启 sing-box、dnsmasq 或代理链路。
+flush_singbox_dns_cache() {
+    local secret http_code
+    [ -r "$SINGBOX_CONFIG" ] || return 2
+    command -v jsonfilter >/dev/null 2>&1 || return 2
+    command -v curl >/dev/null 2>&1 || return 2
+
+    secret=$(jsonfilter -i "$SINGBOX_CONFIG" -e '@.experimental.clash_api.secret' 2>/dev/null)
+    if [ -n "$secret" ]; then
+        http_code=$(printf 'Authorization: Bearer %s\n' "$secret" | \
+            curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 1 --max-time 3 \
+                -X POST -H @- "${CLASH_API_URL}/cache/dns/flush" 2>/dev/null)
+    else
+        http_code=$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 1 --max-time 3 \
+            -X POST "${CLASH_API_URL}/cache/dns/flush" 2>/dev/null)
+    fi
+    case "$http_code" in 2??) return 0 ;; *) return 1 ;; esac
+}
+
+send_hup() {
+    kill -HUP "$@"
+}
+
+flush_dnsmasq_cache() {
+    local pids
+    command -v pidof >/dev/null 2>&1 || return 2
+    pids=$(pidof dnsmasq 2>/dev/null)
+    [ -n "$pids" ] || return 2
+    send_hup $pids >/dev/null 2>&1
+}
+
+refresh_local_dns_caches() {
+    local domain="$1" result
+    if flush_singbox_dns_cache; then
+        log "$domain: sing-box DNS缓存已刷新"
+    else
+        result=$?
+        [ "$result" = "2" ] || log "$domain: sing-box DNS缓存刷新失败（接口不可用）"
+    fi
+
+    if flush_dnsmasq_cache; then
+        log "$domain: dnsmasq DNS缓存已刷新"
+    else
+        result=$?
+        [ "$result" = "2" ] || log "$domain: dnsmasq DNS缓存刷新失败"
+    fi
+    return 0
+}
+
 # ====== IPv4 获取 ======
 get_ip4_iface() {
     local ip=""
@@ -156,7 +208,7 @@ cf_update() {
     local zone_id="$1" token="$2" domain="$3" ip="$4" record_type="$5"
     # record_type: A 或 AAAA
     [ -z "$record_type" ] && record_type="A"
-    local resp match_resp rids rid keep_id result
+    local resp match_resp rids rid keep_id result changed=0
     resp=$(curl -s --connect-timeout 10 -H "Authorization: Bearer $token" -H "Content-Type: application/json" \
         "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records?type=${record_type}&name=${domain}" 2>/dev/null)
     result=$(echo "$resp" | jsonfilter -e '$.success' 2>/dev/null)
@@ -177,6 +229,7 @@ cf_update() {
                 "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records/${keep_id}" 2>/dev/null)
             result=$(echo "$resp" | jsonfilter -e '$.success' 2>/dev/null)
             [ "$result" = "true" ] || { echo "false"; return 1; }
+            changed=1
         fi
 
         for rid in $rids; do
@@ -185,13 +238,15 @@ cf_update() {
                 "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records/${rid}" 2>/dev/null)
             result=$(echo "$resp" | jsonfilter -e '$.success' 2>/dev/null)
             [ "$result" = "true" ] || { echo "false"; return 1; }
+            changed=1
         done
-        echo "true"
+        [ "$changed" = "1" ] && echo "changed" || echo "unchanged"
     else
         resp=$(curl -s --connect-timeout 10 -X POST -H "Authorization: Bearer $token" -H "Content-Type: application/json" \
             -d "{\"type\":\"$record_type\",\"name\":\"$domain\",\"content\":\"$ip\",\"ttl\":120,\"proxied\":false}" \
             "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records" 2>/dev/null)
-        echo "$resp" | jsonfilter -e '$.success' 2>/dev/null
+        result=$(echo "$resp" | jsonfilter -e '$.success' 2>/dev/null)
+        [ "$result" = "true" ] && echo "changed" || { echo "false"; return 1; }
     fi
 }
 
@@ -224,14 +279,14 @@ update_one() {
         return 1
     }
 
-    local cache="/tmp/minigate_ddns_${sec}.cache"
-    local cache6="/tmp/minigate_ddns_${sec}_v6.cache"
+    local cache="${CACHE_DIR}/minigate_ddns_${sec}.cache"
+    local cache6="${CACHE_DIR}/minigate_ddns_${sec}_v6.cache"
     local cached=$(cat "$cache" 2>/dev/null)
     local cached6=$(cat "$cache6" 2>/dev/null)
     local next_time=$(calc_next "$interval")
     local any_ok=0 any_fail=0
     local result_ip="" result_ip6=""
-    local msgs=""
+    local msgs="" refresh_dns=0
 
     # ====== IPv4 处理 ======
     if [ "$ip_version" = "ipv4" ] || [ "$ip_version" = "dual" ]; then
@@ -249,12 +304,15 @@ update_one() {
         if [ -n "$ip4" ] && { [ "$force" = "1" ] || [ "$ip4" != "$cached" ]; }; then
             log "$domain: IPv4 ${cached:-无} -> $ip4"
             local result=$(cf_update "$zone_id" "$token" "$domain" "$ip4" "A")
-            if [ "$result" = "true" ]; then
+            if [ "$result" = "changed" ] || [ "$result" = "unchanged" ]; then
                 log "$domain: A记录同步成功"
                 echo "$ip4" > "$cache"
                 result_ip="$ip4"
                 msgs="${msgs}A:${ip4} ✓; "
                 any_ok=1
+                if [ "$result" = "changed" ] || { [ -n "$cached" ] && [ "$cached" != "$ip4" ]; }; then
+                    refresh_dns=1
+                fi
             else
                 log "$domain: A记录同步失败"
                 msgs="${msgs}A记录失败; "
@@ -285,12 +343,15 @@ update_one() {
         if [ -n "$ip6" ] && { [ "$force" = "1" ] || [ "$ip6" != "$cached6" ]; }; then
             log "$domain: IPv6 ${cached6:-无} -> $ip6"
             local result=$(cf_update "$zone_id" "$token" "$domain" "$ip6" "AAAA")
-            if [ "$result" = "true" ]; then
+            if [ "$result" = "changed" ] || [ "$result" = "unchanged" ]; then
                 log "$domain: AAAA记录同步成功"
                 echo "$ip6" > "$cache6"
                 result_ip6="$ip6"
                 msgs="${msgs}AAAA:${ip6} ✓; "
                 any_ok=1
+                if [ "$result" = "changed" ] || { [ -n "$cached6" ] && [ "$cached6" != "$ip6" ]; }; then
+                    refresh_dns=1
+                fi
             else
                 log "$domain: AAAA记录同步失败"
                 msgs="${msgs}AAAA记录失败; "
@@ -317,6 +378,7 @@ update_one() {
     [ -n "$result_ip6" ] && uci -q set minigate.${sec}.last_ip6="$result_ip6"
     uci -q set minigate.${sec}.last_update="$(date '+%Y-%m-%d %H:%M:%S')"
     uci -q set minigate.${sec}.next_sync="$next_time"
+    [ "$refresh_dns" = "1" ] && refresh_local_dns_caches "$domain" || true
 }
 
 main() {

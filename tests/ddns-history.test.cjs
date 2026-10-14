@@ -30,6 +30,85 @@ function readRows(file) {
     return fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean);
 }
 
+function runUpdateScenario({ cfResult, cachedIp = '', refreshResult = 0 }) {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'minigate-ddns-update-'));
+    const cacheFile = path.join(tempDir, 'minigate_ddns_cfg01.cache');
+    const refreshLog = path.join(tempDir, 'refresh.log');
+    const uciLog = path.join(tempDir, 'uci.log');
+    if (cachedIp) fs.writeFileSync(cacheFile, `${cachedIp}\n`);
+
+    const command = `
+        set -u
+        export MINIGATE_DDNS_LIBRARY_ONLY=1
+        export MINIGATE_CACHE_DIR=${JSON.stringify(tempDir)}
+        export MINIGATE_HISTORY_DIR=${JSON.stringify(path.join(tempDir, 'history'))}
+        export MINIGATE_DDNS_LOG=${JSON.stringify(path.join(tempDir, 'ddns.log'))}
+        . ${JSON.stringify(ddnsScript)}
+        uci() {
+            [ "\${1:-}" = "-q" ] && shift
+            case "\${1:-}:\${2:-}" in
+                get:minigate.cfg01.enabled) printf '1\\n' ;;
+                get:minigate.cfg01.domain) printf '*.example.com\\n' ;;
+                get:minigate.cfg01.cf_zone_id) printf 'zone\\n' ;;
+                get:minigate.cfg01.cf_api_token) printf 'token\\n' ;;
+                get:minigate.cfg01.ip_source) printf 'url\\n' ;;
+                get:minigate.cfg01.interface) printf 'wan\\n' ;;
+                get:minigate.cfg01.ip_url) printf 'http://ip.example/\\n' ;;
+                get:minigate.cfg01.check_interval) printf '300\\n' ;;
+                get:minigate.cfg01.ip_version) printf 'ipv4\\n' ;;
+                set:*) printf '%s\\n' "\$2" >> ${JSON.stringify(uciLog)} ;;
+            esac
+            return 0
+        }
+        get_ip4_url() { printf '198.51.100.20\\n'; }
+        record_ip_history() { return 0; }
+        calc_next() { printf '12:00:00\\n'; }
+        cf_update() {
+            printf '%s\\n' ${JSON.stringify(cfResult)}
+            [ ${JSON.stringify(cfResult)} != false ]
+        }
+        refresh_local_dns_caches() {
+            printf '%s\\n' "\$1" >> ${JSON.stringify(refreshLog)}
+            return ${Number(refreshResult)}
+        }
+        update_one cfg01 1
+    `;
+    const result = spawnSync('/bin/sh', ['-c', command], { encoding: 'utf8' });
+    const refreshes = fs.existsSync(refreshLog) ? readRows(refreshLog) : [];
+    const uciWrites = fs.existsSync(uciLog) ? readRows(uciLog) : [];
+    const cache = fs.existsSync(cacheFile) ? fs.readFileSync(cacheFile, 'utf8').trim() : '';
+    return { result, refreshes, uciWrites, cache };
+}
+
+function runCloudflareScenario(mode) {
+    const command = `
+        set -u
+        export MINIGATE_DDNS_LIBRARY_ONLY=1
+        . ${JSON.stringify(ddnsScript)}
+        CF_MODE=${JSON.stringify(mode)}
+        curl() {
+            case "\$*" in
+                *'-X PUT'*|*'-X DELETE'*|*'-X POST'*) printf 'WRITE\\n' ;;
+                *'&content='*) printf 'MATCH\\n' ;;
+                *) printf 'LIST\\n' ;;
+            esac
+        }
+        jsonfilter() {
+            input=; IFS= read -r input || true
+            expression="\${2:-}"
+            case "\$expression:\$input:\$CF_MODE" in
+                '$.success:'*) [ "\$CF_MODE" = failure ] && printf 'false\\n' || printf 'true\\n' ;;
+                '$.result[*].id:LIST:create') ;;
+                '$.result[*].id:LIST:duplicates') printf 'r1\\nr2\\n' ;;
+                '$.result[*].id:LIST:'*) printf 'r1\\n' ;;
+                '$.result[0].id:MATCH:unchanged'|'$.result[0].id:MATCH:duplicates') printf 'r1\\n' ;;
+            esac
+        }
+        cf_update zone token example.com 198.51.100.20 A
+    `;
+    return spawnSync('/bin/sh', ['-c', command], { encoding: 'utf8' });
+}
+
 test('DDNS history records only actual IPv4 changes', () => {
     const { historyDir, output } = runHistory(`
         export MINIGATE_HISTORY_NOW=100000
@@ -82,6 +161,84 @@ test('DDNS writer and controller both use the domain history key', () => {
     assert.match(shellKey, /record_ip_history "\$domain" "ipv6" "\$ip6"/);
     assert.match(controller, /history_section_name\(section\.domain\) \.\. "\." \.\. family \.\. "\.tsv"/);
     assert.doesNotMatch(controller, /history_section_name\(section\.name\)/);
+});
+
+test('Cloudflare updater distinguishes unchanged records from authoritative changes', () => {
+    for (const mode of ['create', 'replace', 'duplicates']) {
+        const result = runCloudflareScenario(mode);
+        assert.equal(result.status, 0, `${mode}: ${result.stderr || result.stdout}`);
+        assert.equal(result.stdout.trim(), 'changed', mode);
+    }
+    const unchanged = runCloudflareScenario('unchanged');
+    assert.equal(unchanged.status, 0, unchanged.stderr || unchanged.stdout);
+    assert.equal(unchanged.stdout.trim(), 'unchanged');
+
+    const failure = runCloudflareScenario('failure');
+    assert.notEqual(failure.status, 0);
+    assert.equal(failure.stdout.trim(), 'false');
+});
+
+test('successful Cloudflare changes refresh local DNS caches once', () => {
+    const scenario = runUpdateScenario({ cfResult: 'changed' });
+    assert.equal(scenario.result.status, 0, scenario.result.stderr || scenario.result.stdout);
+    assert.deepEqual(scenario.refreshes, ['*.example.com']);
+    assert.equal(scenario.cache, '198.51.100.20');
+    assert.ok(scenario.uciWrites.includes('minigate.cfg01.status=ok'));
+});
+
+test('unchanged forced sync does not flush caches, but a stale local IP does', () => {
+    const current = runUpdateScenario({ cfResult: 'unchanged', cachedIp: '198.51.100.20' });
+    assert.equal(current.result.status, 0, current.result.stderr || current.result.stdout);
+    assert.deepEqual(current.refreshes, []);
+
+    const stale = runUpdateScenario({ cfResult: 'unchanged', cachedIp: '198.51.100.19' });
+    assert.equal(stale.result.status, 0, stale.result.stderr || stale.result.stdout);
+    assert.deepEqual(stale.refreshes, ['*.example.com']);
+    assert.equal(stale.cache, '198.51.100.20');
+});
+
+test('Cloudflare failure never flushes local caches', () => {
+    const scenario = runUpdateScenario({ cfResult: 'false', cachedIp: '198.51.100.19' });
+    assert.equal(scenario.result.status, 0, scenario.result.stderr || scenario.result.stdout);
+    assert.deepEqual(scenario.refreshes, []);
+    assert.equal(scenario.cache, '198.51.100.19');
+    assert.ok(scenario.uciWrites.includes('minigate.cfg01.status=error'));
+});
+
+test('cache refresh failure does not turn a successful DDNS update into an error', () => {
+    const scenario = runUpdateScenario({ cfResult: 'changed', refreshResult: 1 });
+    assert.equal(scenario.result.status, 0, scenario.result.stderr || scenario.result.stdout);
+    assert.deepEqual(scenario.refreshes, ['*.example.com']);
+    assert.ok(scenario.uciWrites.includes('minigate.cfg01.status=ok'));
+});
+
+test('local cache refresh uses sing-box API and dnsmasq SIGHUP without service restart', () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'minigate-dns-flush-'));
+    const config = path.join(tempDir, 'config.json');
+    const calls = path.join(tempDir, 'calls.log');
+    fs.writeFileSync(config, '{}\n');
+    const command = `
+        set -eu
+        export MINIGATE_DDNS_LIBRARY_ONLY=1
+        export MINIGATE_SINGBOX_CONFIG=${JSON.stringify(config)}
+        export MINIGATE_CLASH_API_URL=http://127.0.0.1:19095
+        export MINIGATE_DDNS_LOG=${JSON.stringify(path.join(tempDir, 'ddns.log'))}
+        . ${JSON.stringify(ddnsScript)}
+        jsonfilter() { printf 'local-secret\\n'; }
+        curl() { printf 'curl %s\\n' "\$*" >> ${JSON.stringify(calls)}; sed 's/^/header /' >> ${JSON.stringify(calls)}; printf '204'; }
+        pidof() { [ "\$1" = dnsmasq ] && printf '101 202\\n'; }
+        send_hup() { printf 'hup %s\\n' "\$*" >> ${JSON.stringify(calls)}; }
+        refresh_local_dns_caches '*.example.com'
+    `;
+    const result = spawnSync('/bin/sh', ['-c', command], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const callLog = fs.readFileSync(calls, 'utf8');
+    const curlLine = callLog.split('\n').find(line => line.startsWith('curl ')) || '';
+    assert.match(callLog, /curl .* -X POST -H @- http:\/\/127\.0\.0\.1:19095\/cache\/dns\/flush/);
+    assert.match(callLog, /header Authorization: Bearer local-secret/);
+    assert.doesNotMatch(curlLine, /local-secret/, 'secret must not appear in the curl process arguments');
+    assert.match(callLog, /hup 101 202/);
+    assert.doesNotMatch(callLog, /restart|reload|stop|start/);
 });
 
 test('controller exposes a read-only rolling 24-hour history endpoint', () => {
