@@ -1,10 +1,10 @@
 #!/bin/sh
 # MiniGate GeoFence - 地区访问控制
 # 检查反代访问日志，非允许地区的 IP 用防火墙封禁
-LOGFILE="/var/log/minigate-geofence.log"
-CACHE_DIR="/tmp/minigate_geo"
+LOGFILE="${MINIGATE_GEOFENCE_LOG:-/var/log/minigate-geofence.log}"
+CACHE_DIR="${MINIGATE_GEO_CACHE_DIR:-/tmp/minigate_geo}"
 BLOCK_SET="minigate_blocked"
-ACCESS_LOG="/var/log/minigate-access.log"
+ACCESS_LOG="${MINIGATE_ACCESS_LOG:-/var/log/minigate-access.log}"
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [GEOFENCE] $*" >> "$LOGFILE"; }
 
@@ -98,22 +98,37 @@ clean_cache() {
     [ -d "$CACHE_DIR" ] && find "$CACHE_DIR" -type f -mmin +1440 -delete 2>/dev/null
 }
 
+# 局域网、回环、链路本地和运营商 NAT 地址没有归属地，局域网直连时访客就是内网 IP，不参与地区判断
+is_private_ip() {
+    case "$1" in
+        0.*|10.*|127.*|169.254.*|192.168.*) return 0 ;;
+        172.1[6-9].*|172.2[0-9].*|172.3[01].*) return 0 ;;
+        100.6[4-9].*|100.[7-9][0-9].*|100.1[01][0-9].*|100.12[0-7].*) return 0 ;;
+    esac
+    return 1
+}
+
+# BusyBox grep 不支持 -P，用 sed 取 IPv4 访客地址
+extract_public_ips() {
+    local ip
+    sed -n 's/.*"client":"\([0-9]\{1,3\}\(\.[0-9]\{1,3\}\)\{3\}\)".*/\1/p' "$ACCESS_LOG" 2>/dev/null | \
+        sort -u | while read -r ip; do
+            is_private_ip "$ip" || echo "$ip"
+        done
+}
+
 # 主逻辑：扫描 access log 中的新 IP
 scan_and_block() {
     local enabled=$(uci -q get minigate.global.geo_enabled)
     [ "$enabled" != "1" ] && return 0
-    
+
     local allowed=$(uci -q get minigate.global.geo_allowed)
     [ -z "$allowed" ] && { log "未配置允许地区，跳过"; return 0; }
-    
+
     init_block_set
-    
-    # 提取所有外网 IP（排除内网）
-    local ips=$(grep -oP '"client":"[^"]*"' "$ACCESS_LOG" 2>/dev/null | \
-        grep -oP '[\d\.]+' | \
-        grep -v '^192\.168\.' | grep -v '^10\.' | grep -v '^172\.(1[6-9]|2[0-9]|3[01])\.' | grep -v '^127\.' | \
-        sort -u)
-    
+
+    local ips=$(extract_public_ips)
+
     local checked=0 blocked=0
     for ip in $ips; do
         # 已经封禁的跳过
@@ -168,6 +183,10 @@ flush_blocks() {
     uci commit minigate 2>/dev/null
     log "已清除所有封禁"
 }
+
+if [ "${MINIGATE_GEOFENCE_LIBRARY_ONLY:-0}" = "1" ]; then
+    return 0 2>/dev/null || exit 0
+fi
 
 case "${1:-scan}" in
     scan) scan_and_block ;;

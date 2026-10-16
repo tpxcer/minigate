@@ -213,9 +213,20 @@ remove_program_files() {
 }
 
 remove_runtime_files() {
-    local tmp_dir log_dir
+    local tmp_dir log_dir lan_hosts pids
     tmp_dir="$(root_path /tmp)"
     log_dir="$(root_path /var/log)"
+
+    # 正常由 init stop 移除；这里兜底，避免卸载后 dnsmasq 仍把代理域名解析到本机
+    lan_hosts="$(root_path /tmp/hosts/minigate)"
+    if [ -f "$lan_hosts" ]; then
+        rm -f "$lan_hosts"
+        if [ "$SKIP_SERVICES" != "1" ] && [ -z "$ROOT" ]; then
+            pids="$(pidof dnsmasq 2>/dev/null || true)"
+            [ -z "$pids" ] || kill -HUP $pids 2>/dev/null || true
+        fi
+    fi
+
     rm -rf \
         "$(root_path /var/run/minigate)" \
         "$(root_path /tmp/minigate-update)" \

@@ -58,6 +58,7 @@ minigate 面向需要自托管轻量网关能力的 OpenWrt / ImmortalWrt 用户
 - 多站点管理
 - **直接 IP 访问拒绝**：只允许域名访问，扫描器直接断开
 - **未知 Host 拒绝**：同一监听端口下，未配置的域名/前缀不会落到第一个反代站点
+- **局域网直连解析**（可选）：内网设备把代理域名直接解析到本机 LAN 地址，公网 IP 变化、上游 DNS 缓存过期或主路由不支持回流时，内网访问不受影响，流量也不进入代理
 
 ### 🛡 登录防护 (Login Guard)
 - 监控 **SSH（dropbear）** 和 **LuCI 网页** 登录失败
@@ -307,6 +308,21 @@ opkg remove minigate 2>/dev/null || apk del minigate 2>/dev/null
 3. 启用 SSL（自动关联 ACME 证书）
 4. 如需输入 `http://域名:监听端口` 后自动进入 HTTPS，开启「HTTP 自动跳转」
 5. 保存并应用；minigate 会自动跟随每条 HTTPS 规则的监听端口，无需额外指定固定跳转端口
+6. 如需内网访问不绕公网，开启「局域网直连解析」（见下方说明）
+
+### 局域网直连解析
+宽带重新拨号后，DDNS 会很快更新公网记录，但主路由或运营商 DNS 可能在一段时间内继续返回旧 IP（部分运营商 DNS 不遵守 TTL），内网访问因此时好时坏；主路由不支持 NAT 回流时也无法从内网访问。
+
+开启后，minigate 在每次启动和重载时把已生成站点的具体域名写入 `/tmp/hosts/minigate`，并通知 dnsmasq 重新加载（不重启任何服务，内容未变时不重载）：
+
+```
+192.168.1.1 app.example.com
+```
+
+- 解析地址默认取 LAN 口 IPv4，也可以手动指定
+- 只覆盖使用本机 dnsmasq 的设备；浏览器自行开启的安全 DNS（DoH）不受影响
+- 内网访问使用与公网相同的端口，因此要求公网端口映射没有改端口号（例如外网 443 映射到内网 2000 时不适用）
+- 关闭开关或停止 minigate 时会移除该文件；也可以手动执行 `/usr/lib/minigate/proxy.sh lan-dns` 重新同步
 
 ### Cloudflare API Token 创建方法
 1. 登录 [Cloudflare Dashboard](https://dash.cloudflare.com/)

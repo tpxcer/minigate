@@ -11,6 +11,8 @@ ACCESS_LOG="${MINIGATE_ACCESS_LOG:-/var/log/minigate-access.log}"
 SOCKET_DIR="${MINIGATE_SOCKET_DIR:-/var/run/minigate}"
 STREAM_MODULE="${MINIGATE_STREAM_MODULE:-/usr/lib/nginx/modules/ngx_stream_module.so}"
 ACCESS_LOG_MAX="${MINIGATE_ACCESS_LOG_MAX:-1048576}"
+# OpenWrt 的 dnsmasq 以 addn-hosts=/tmp/hosts 读取整个目录，收到 SIGHUP 时重新加载
+LAN_HOSTS_FILE="${MINIGATE_LAN_HOSTS_FILE:-/tmp/hosts/minigate}"
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [PROXY] $*" >> "$LOGFILE"; }
 
@@ -375,6 +377,89 @@ generate_sites() {
     rm -f /tmp/minigate_stream_*.tmp
 }
 
+# === 局域网直连解析 ===
+# 内网设备把本机反代的域名直接解析到 LAN 地址：不依赖公网 IP、回流 NAT 和上游 DNS 缓存，
+# 流量留在局域网内，也不会进入代理。公网解析仍由 DDNS 维护。
+
+is_ipv4() {
+    printf '%s\n' "$1" | awk -F. '
+        NF != 4 { exit 1 }
+        { for (i = 1; i <= 4; i++) if ($i !~ /^[0-9]+$/ || $i > 255) exit 1 }
+    '
+}
+
+# 手动指定优先；留空时取 LAN 接口 IPv4，再退回 network.lan.ipaddr（可能是列表或带 /前缀）
+get_lan_ip() {
+    local ip
+    ip=$(uci -q get minigate.global.lan_ip)
+    [ -n "$ip" ] || ip=$(ubus call network.interface.lan status 2>/dev/null | \
+        jsonfilter -e '@["ipv4-address"][0].address' 2>/dev/null)
+    [ -n "$ip" ] || ip=$(uci -q get network.lan.ipaddr)
+    ip=${ip%% *}
+    ip=${ip%%/*}
+    is_ipv4 "$ip" && echo "$ip"
+}
+
+# 以生成的站点配置为准，只取实际由 nginx 提供的具体域名（跳过默认站点 _ 和通配符）
+list_site_domains() {
+    cat "$SITES_DIR"/*.conf 2>/dev/null | \
+        sed -n 's/^[[:space:]]*server_name[[:space:]]\{1,\}\([^;]*\);.*/\1/p' | \
+        tr ' ' '\n' | grep -E '^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$' | sort -u
+}
+
+send_hup() {
+    kill -HUP "$@"
+}
+
+reload_dnsmasq_hosts() {
+    local pids
+    pids=$(pidof dnsmasq 2>/dev/null)
+    [ -n "$pids" ] && send_hup $pids >/dev/null 2>&1
+    return 0
+}
+
+remove_lan_hosts() {
+    [ -f "$LAN_HOSTS_FILE" ] || return 0
+    rm -f "$LAN_HOSTS_FILE"
+    reload_dnsmasq_hosts
+    log "局域网直连解析已移除"
+}
+
+# 内容未变时不重载 dnsmasq，避免每次保存都清空整个 DNS 缓存
+sync_lan_hosts() {
+    local ip domains domain content
+    if [ "$(uci -q get minigate.global.lan_dns)" != "1" ]; then
+        remove_lan_hosts
+        return 0
+    fi
+
+    ip=$(get_lan_ip)
+    if [ -z "$ip" ]; then
+        log "局域网直连解析：未取得有效的 LAN IPv4 地址，已跳过"
+        remove_lan_hosts
+        return 0
+    fi
+    domains=$(list_site_domains)
+    if [ -z "$domains" ]; then
+        remove_lan_hosts
+        return 0
+    fi
+
+    content="# MiniGate 局域网直连解析，由 proxy.sh 自动生成"
+    for domain in $domains; do
+        content="${content}
+${ip} ${domain}"
+    done
+    [ -f "$LAN_HOSTS_FILE" ] && [ "$(cat "$LAN_HOSTS_FILE")" = "$content" ] && return 0
+
+    mkdir -p "$(dirname "$LAN_HOSTS_FILE")" && printf '%s\n' "$content" > "$LAN_HOSTS_FILE" || {
+        log "局域网直连解析：写入 ${LAN_HOSTS_FILE} 失败"
+        return 1
+    }
+    reload_dnsmasq_hosts
+    log "局域网直连解析 -> ${ip}: $(echo $domains)"
+}
+
 do_stop() {
     if [ -f "$PID_FILE" ]; then
         local pid=$(cat "$PID_FILE" 2>/dev/null)
@@ -409,7 +494,8 @@ start_prepared() {
 do_start() {
     [ -z "$(which nginx 2>/dev/null)" ] && { log "nginx未安装"; return 1; }
     prepare_config || return 1
-    start_prepared
+    start_prepared || return 1
+    sync_lan_hosts
 }
 
 do_reload() {
@@ -419,13 +505,15 @@ do_reload() {
     grep -q '^stream {' "$NGINX_CONF" 2>/dev/null && new_mux=1
     if [ -f "$PID_FILE" ] && kill -0 $(cat "$PID_FILE" 2>/dev/null) 2>/dev/null; then
         if [ "$old_mux" != "$new_mux" ]; then
-            start_prepared
+            start_prepared || return 1
         else
-            kill -HUP $(cat "$PID_FILE") && log "已重载"
+            kill -HUP $(cat "$PID_FILE") || return 1
+            log "已重载"
         fi
     else
-        start_prepared
+        start_prepared || return 1
     fi
+    sync_lan_hosts
 }
 
 # /var/log 在内存中且 nginx 不会自行轮转。访问日志保留最近记录到 .1 后原地清空：
@@ -443,11 +531,16 @@ trim_logs() {
     done
 }
 
+if [ "${MINIGATE_PROXY_LIBRARY_ONLY:-0}" = "1" ]; then
+    return 0 2>/dev/null || exit 0
+fi
+
 case "$1" in
     start) do_start ;;
-    stop) do_stop ;;
+    stop) do_stop; remove_lan_hosts ;;
     reload) do_reload ;;
     test) prepare_config ;;
     trim-logs) trim_logs ;;
-    *) echo "用法: $0 {start|stop|reload|test|trim-logs}" ;;
+    lan-dns) sync_lan_hosts ;;
+    *) echo "用法: $0 {start|stop|reload|test|trim-logs|lan-dns}" ;;
 esac
