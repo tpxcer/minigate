@@ -36,6 +36,8 @@ function fixture() {
     write(dir, 'tmp/minigate-update-state.json', '{}');
     write(dir, 'tmp/minigate_proxy_443.tmp');
     write(dir, 'tmp/luci-indexcache');
+    write(dir, 'tmp/hosts/minigate', '192.168.1.1 app.example.com\n');
+    write(dir, 'tmp/hosts/dhcp.cfg01411c', '192.168.1.1 router\n');
     return dir;
 }
 
@@ -67,9 +69,11 @@ test('default uninstall removes the app but preserves configuration, certificate
         'var/run/minigate-nginx.pid',
         'tmp/minigate-update-state.json',
         'tmp/minigate_proxy_443.tmp',
-        'tmp/luci-indexcache'
+        'tmp/luci-indexcache',
+        'tmp/hosts/minigate'
     ]) assert.equal(fs.existsSync(path.join(dir, relative)), false, relative);
 
+    assert.equal(fs.readFileSync(path.join(dir, 'tmp/hosts/dhcp.cfg01411c'), 'utf8'), '192.168.1.1 router\n');
     assert.equal(fs.readFileSync(path.join(dir, 'etc/config/minigate'), 'utf8'), 'config-data');
     assert.equal(fs.readFileSync(path.join(dir, 'etc/minigate/certs/site.pem'), 'utf8'), 'certificate-data');
     assert.equal(fs.readFileSync(path.join(dir, 'etc/minigate/login-guard/bans.txt'), 'utf8'), '198.51.100.4 9999999999');

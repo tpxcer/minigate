@@ -34,6 +34,24 @@ o = s:option(Flag, "http_redirect", "启用 HTTP 跳转")
 o.default = "0"
 o.rmempty = false
 
+local lan_ip_auto = uc:get("network", "lan", "ipaddr")
+if type(lan_ip_auto) == "table" then lan_ip_auto = lan_ip_auto[1] end
+lan_ip_auto = lan_ip_auto and lan_ip_auto:match("^(%d+%.%d+%.%d+%.%d+)")
+
+s = m:section(NamedSection, "global", "global", "局域网直连解析",
+    "让局域网设备把本页的代理域名直接解析到本机 LAN 地址：访问不经过公网 IP、主路由回流和上游 DNS 缓存，也不进入代理；公网解析不变。" ..
+    "仅对使用本机 DNS（dnsmasq）的设备生效，且要求公网端口映射没有改端口号。")
+s.anonymous = true
+
+o = s:option(Flag, "lan_dns", "启用局域网直连解析")
+o.default = "0"
+o.rmempty = false
+
+o = s:option(Value, "lan_ip", "解析到的 LAN 地址", "留空自动使用 LAN 口 IPv4 地址。")
+o.datatype = "ip4addr"
+o.placeholder = lan_ip_auto and ("自动（" .. lan_ip_auto .. "）") or "自动"
+o:depends("lan_dns", "1")
+
 -- ================================
 -- 通配符域名
 -- ================================
