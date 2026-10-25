@@ -52,6 +52,44 @@ o.datatype = "ip4addr"
 o.placeholder = lan_ip_auto and ("自动（" .. lan_ip_auto .. "）") or "自动"
 o:depends("lan_dns", "1")
 
+s = m:section(NamedSection, "global", "global", "公网访问范围",
+    "启用后，仅允许所选地区的公网 IP 访问本插件的所有反代站点（含 HTTP 跳转和 WebSocket）；其他地区及归属地未知的 IP 直接断开。" ..
+    "局域网私有地址和回环地址继续可用，不影响 SSH、RustDesk 等其他服务。IPv4/IPv6 均检查，按实际连接来源判断。" ..
+    "使用随版本附带的离线地址库，归属地可能存在误差；外出或使用外省代理出口也会被拒绝。")
+s.anonymous = true
+
+o = s:option(Flag, "access_enabled", "限制公网访问地区")
+o.default = "0"
+o.rmempty = false
+
+local access_regions = {}
+local regions_file = io.open("/usr/lib/minigate/geo/regions.txt", "r")
+if regions_file then
+    for line in regions_file:lines() do
+        local code, name = line:match("^(%d+) (.+)$")
+        if code then access_regions[#access_regions + 1] = {code, name} end
+    end
+    regions_file:close()
+end
+
+o = s:option(DynamicList, "access_regions", "允许的省级地区", "可选择多个地区；只允许四川时，仅保留“四川省”。关闭地区限制即恢复所有地区访问。")
+o.default = "510000"
+o.rmempty = false
+o:depends("access_enabled", "1")
+local valid_regions = {}
+for _, region in ipairs(access_regions) do
+    o:value(region[1], region[2])
+    valid_regions[region[1]] = true
+end
+o.validate = function(self, value, section)
+    local values = type(value) == "table" and value or {value}
+    if #values == 0 then return nil, "请选择至少一个允许的地区" end
+    for _, code in ipairs(values) do
+        if not valid_regions[code] then return nil, "请从列表中选择有效的省级地区" end
+    end
+    return value
+end
+
 -- ================================
 -- 通配符域名
 -- ================================

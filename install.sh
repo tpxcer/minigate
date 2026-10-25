@@ -72,6 +72,7 @@ fi
 mkdir -p /usr/lib/minigate
 mkdir -p /etc/minigate/acme /etc/minigate/certs /etc/minigate/nginx/sites /etc/minigate/nginx/streams /etc/minigate/login-guard
 cp "$D"/root/usr/lib/minigate/*.sh /usr/lib/minigate/; chmod +x /usr/lib/minigate/*.sh
+cp -R "$D"/root/usr/lib/minigate/geo /usr/lib/minigate/
 cp "$D"/root/etc/init.d/minigate /etc/init.d/; chmod +x /etc/init.d/minigate
 
 # 配置：保留旧的，但确保有 login_guard 区段

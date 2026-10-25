@@ -59,6 +59,7 @@ minigate 面向需要自托管轻量网关能力的 OpenWrt / ImmortalWrt 用户
 - **直接 IP 访问拒绝**：只允许域名访问，扫描器直接断开
 - **未知 Host 拒绝**：同一监听端口下，未配置的域名/前缀不会落到第一个反代站点
 - **局域网直连解析**（可选）：内网设备把代理域名直接解析到本机 LAN 地址，公网 IP 变化、上游 DNS 缓存过期或主路由不支持回流时，内网访问不受影响，流量也不进入代理
+- **公网访问范围**（可选）：选择允许访问的省级地区，IPv4/IPv6 在首次转发前检查，未命中白名单直接断开；局域网私有地址继续可用
 
 ### 🛡 登录防护 (Login Guard)
 - 监控 **SSH（dropbear）** 和 **LuCI 网页** 登录失败
@@ -323,6 +324,24 @@ opkg remove minigate 2>/dev/null || apk del minigate 2>/dev/null
 - 只覆盖使用本机 dnsmasq 的设备；浏览器自行开启的安全 DNS（DoH）不受影响
 - 内网访问使用与公网相同的端口，因此要求公网端口映射没有改端口号（例如外网 443 映射到内网 2000 时不适用）
 - 关闭开关或停止 minigate 时会移除该文件；也可以手动执行 `/usr/lib/minigate/proxy.sh lan-dns` 重新同步
+
+### 设置公网访问范围
+在 **反向代理 → 公网访问范围** 中启用「限制公网访问地区」，再添加允许的省级地区（支持多个）。例如仅保留「四川省」，保存应用后，只允许地址库判定为四川的公网 IP 访问。默认关闭，升级不会自动收紧现有访问范围。
+
+- 所有普通域名、子域名、HTTP 跳转及 WebSocket 均在转发前检查；其他地区、境外及归属地未知来源返回 Nginx `444`（直接断开，无响应正文）
+- IPv4、IPv6 使用同一策略；RFC1918 私有 IPv4、回环、IPv6 ULA 和链路本地地址继续放行；LAN 接口已分配的全球 IPv6 子网也自动豁免。使用「局域网直连解析」可通过 LAN IPv4 访问
+- 不修改防火墙，不限制 SSH、RustDesk 等其他服务；启用此功能时不再运行旧版地区日志扫描封禁逻辑，已有登录防护独立生效
+- 使用实际连接来源（同端口分流时为本机 stream 提供的 PROXY protocol），不信任访客提交的 `X-Forwarded-For` / `X-Real-IP`；若前面还有 CDN 或隐藏来源的代理，看到的是该代理的出口 IP
+- 数据来自 [ip2region](https://github.com/lionsoul2014/ip2region)，随安装包附带 34 个省级地区的离线 CIDR，不需要在线归属地接口或额外 Nginx 模块。版本、源文件 SHA-256 和网段数见 `root/usr/lib/minigate/geo/metadata.json`，原许可证随包保留
+- 地址归属可能误判或随运营商调整变化；外出、漫游或使用外省代理出口时可能被拦截。数据缺失或配置为空时仍拒绝公网，不自动退回全部放行。可从局域网关闭开关恢复访问
+
+维护数据时，从 `scripts/build-geo-data.py` 中的固定 `REVISION` 下载对应 `data/ipv4_source.txt`、`data/ipv6_source.txt`，然后运行：
+
+```bash
+python3 scripts/build-geo-data.py /path/to/ip2region/data
+```
+
+脚本核验源文件 SHA-256 后生成省级 CIDR。更新快照时需同时审查来源提交、更新固定摘要和许可证，并随项目新版本发布；运行时不自动下载或替换白名单。
 
 ### Cloudflare API Token 创建方法
 1. 登录 [Cloudflare Dashboard](https://dash.cloudflare.com/)

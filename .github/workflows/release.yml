@@ -73,7 +73,13 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           test -s "releases/${tag}.md"
 
+      - name: Install runtime test dependencies
+        run: sudo apt-get update && sudo apt-get install -y nginx lua5.1
+
       - name: Run tests
+        env:
+          MINIGATE_TEST_NGINX: /usr/sbin/nginx
+          MINIGATE_TEST_LUA: /usr/bin/lua5.1
         run: node --test tests/*.test.cjs
 
       - name: Build IPK

@@ -35,6 +35,7 @@ install -m 0644 "$ROOT_DIR/luasrc/controller/minigate.lua" "$DATA_DIR/usr/lib/lu
 install -m 0644 "$ROOT_DIR"/luasrc/model/cbi/minigate/*.lua "$DATA_DIR/usr/lib/lua/luci/model/cbi/minigate/"
 install -m 0644 "$ROOT_DIR"/luasrc/view/minigate/*.htm "$DATA_DIR/usr/lib/lua/luci/view/minigate/"
 install -m 0755 "$ROOT_DIR"/root/usr/lib/minigate/*.sh "$DATA_DIR/usr/lib/minigate/"
+cp -R "$ROOT_DIR/root/usr/lib/minigate/geo" "$DATA_DIR/usr/lib/minigate/"
 install -m 0644 "$ROOT_DIR/root/etc/config/minigate" "$DATA_DIR/etc/config/minigate"
 install -m 0755 "$ROOT_DIR/root/etc/init.d/minigate" "$DATA_DIR/etc/init.d/minigate"
 

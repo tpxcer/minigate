@@ -119,6 +119,8 @@ extract_public_ips() {
 
 # 主逻辑：扫描 access log 中的新 IP
 scan_and_block() {
+    # 请求前准入已覆盖公网反代，避免旧扫描器再把来源全局封禁到其他服务。
+    [ "$(uci -q get minigate.global.access_enabled)" = "1" ] && return 0
     local enabled=$(uci -q get minigate.global.geo_enabled)
     [ "$enabled" != "1" ] && return 0
 

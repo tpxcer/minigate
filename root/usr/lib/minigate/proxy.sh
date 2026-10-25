@@ -13,6 +13,8 @@ STREAM_MODULE="${MINIGATE_STREAM_MODULE:-/usr/lib/nginx/modules/ngx_stream_modul
 ACCESS_LOG_MAX="${MINIGATE_ACCESS_LOG_MAX:-1048576}"
 # OpenWrt 的 dnsmasq 以 addn-hosts=/tmp/hosts 读取整个目录，收到 SIGHUP 时重新加载
 LAN_HOSTS_FILE="${MINIGATE_LAN_HOSTS_FILE:-/tmp/hosts/minigate}"
+GEO_DIR="${MINIGATE_GEO_DIR:-/usr/lib/minigate/geo}"
+MIME_TYPES="${MINIGATE_MIME_TYPES:-/etc/nginx/mime.types}"
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [PROXY] $*" >> "$LOGFILE"; }
 
@@ -46,7 +48,9 @@ EOF
     fi
     cat >> "$NGINX_CONF" <<'EOF'
 http {
-    include /etc/nginx/mime.types;
+EOF
+    echo "    include ${MIME_TYPES};" >> "$NGINX_CONF"
+    cat >> "$NGINX_CONF" <<'EOF'
     default_type application/octet-stream;
     server_names_hash_bucket_size 64;
     sendfile on; keepalive_timeout 65; client_max_body_size 100m;
@@ -69,6 +73,7 @@ http {
         '"referer":"$http_referer",'
         '"ua":"$http_user_agent"}';
 EOF
+    write_geo_access >> "$NGINX_CONF"
     echo "    access_log ${ACCESS_LOG} minigate_json;" >> "$NGINX_CONF"
     echo "    include ${SITES_DIR}/*.conf;" >> "$NGINX_CONF"
     cat >> "$NGINX_CONF" <<'EOF'
@@ -105,6 +110,59 @@ get_ipv6_listen() {
 get_http_redirect() {
     local enabled=$(uci -q get minigate.global.http_redirect)
     echo "${enabled:-0}"
+}
+
+# 同端口分流已由本机 stream 写入 PROXY protocol；不读取访客传来的转发头。
+write_geo_access() {
+    [ "$(uci -q get minigate.global.access_enabled)" = "1" ] || return 0
+    cat <<'EOF'
+    geo $minigate_client_addr $minigate_geo_allowed {
+        default 0;
+        127.0.0.1/32 1;
+        10.0.0.0/8 1;
+        172.16.0.0/12 1;
+        192.168.0.0/16 1;
+        ::1/128 1;
+        fc00::/7 1;
+        fe80::/10 1;
+EOF
+    write_lan_ipv6_access
+    local region
+    for region in $(uci -q get minigate.global.access_regions | tr ' ' '\n' | sort -u); do
+        # 仅接受随包提供的省级代码，防止 UCI 值进入路径或 Nginx 指令。
+        case "$region" in
+            [0-9][0-9]0000) ;;
+            *) log "访问范围：忽略无效地区代码"; continue ;;
+        esac
+        if [ -f "$GEO_DIR/$region.conf" ] && grep -q "^${region} " "$GEO_DIR/regions.txt"; then
+            echo "        include ${GEO_DIR}/${region}.conf;"
+        else
+            log "访问范围：地区 ${region} 数据缺失，该地区公网请求将被拒绝"
+        fi
+    done
+    echo "    }"
+}
+
+write_lan_ipv6_access() {
+    local status address mask i=0
+    status=$(ubus call network.interface.lan status 2>/dev/null)
+    [ -n "$status" ] || return 0
+    # LAN 获得的全球 IPv6 前缀也属于内网；只接受 LAN 接口实际分配的子网。
+    while [ "$i" -lt 32 ]; do
+        address=$(printf '%s' "$status" | jsonfilter -e "@[\"ipv6-prefix-assignment\"][${i}].address" 2>/dev/null)
+        mask=$(printf '%s' "$status" | jsonfilter -e "@[\"ipv6-prefix-assignment\"][${i}].mask" 2>/dev/null)
+        [ -n "$address" ] || break
+        i=$((i + 1))
+        case "$address" in *[!0-9a-fA-F:]*|[!23]*) continue ;; esac
+        case "$mask" in ''|*[!0-9]*) continue ;; esac
+        [ "$mask" -ge 48 ] && [ "$mask" -le 128 ] || continue
+        echo "        ${address}/${mask} 1;"
+    done
+}
+
+write_geo_guard() {
+    [ "$(uci -q get minigate.global.access_enabled)" = "1" ] || return 0
+    echo '    if ($minigate_geo_allowed = 0) { return 444; }' >> "$1"
 }
 
 ensure_default_cert() {
@@ -185,6 +243,9 @@ write_redirect_server() {
 server {
     listen unix:${SOCKET_DIR}/http_${lport}.sock proxy_protocol;
     server_name ${domain};
+SEOF
+    write_geo_guard "$conf"
+    cat >> "$conf" <<SEOF
     return 308 https://${authority}\$request_uri;
 }
 SEOF
@@ -255,6 +316,7 @@ SEOF
     server_name ${domain};
 ${ex}
 SEOF
+    write_geo_guard "$conf"
     if [ "$ssl" = "1" ]; then
         local cp=$(find_cert "$domain")
         [ -n "$cp" ] && cat >> "$conf" <<SEOF
