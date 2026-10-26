@@ -69,6 +69,7 @@ EOF
         '"method":"$request_method",'
         '"uri":"$request_uri",'
         '"status":$status,'
+        '"upstream_status":"$upstream_status",'
         '"size":$body_bytes_sent,'
         '"referer":"$http_referer",'
         '"ua":"$http_user_agent"}';

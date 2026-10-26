@@ -373,24 +373,38 @@ function action_proxy_access()
     end
     -- 读取最近 500 条日志，按 IP 聚合
     local raw = sys.exec("cat /var/log/minigate-access.log.1 /var/log/minigate-access.log 2>/dev/null | tail -n 500") or ""
-    local visitors = {}  -- ip -> {last_time, domain, count, first_time}
+    local visitors = {}
     local order = {}     -- 保持顺序
 
     for line in raw:gmatch("[^\n]+") do
         local time   = line:match('"time":"([^"]*)"')
         local domain = line:match('"domain":"([^"]*)"')
         local client = line:match('"client":"([^"]*)"')
+        local status = tonumber(line:match('"status"%s*:%s*(%d+)'))
+        local upstream = line:match('"upstream_status":"([^"]*)"')
         if time and client and client ~= "" then
-            if not visitors[client] then
-                visitors[client] = { last_time = time, first_time = time, domain = domain or "", count = 1 }
-                order[#order + 1] = client
-            else
-                visitors[client].last_time = time
-                visitors[client].count = visitors[client].count + 1
-                if domain and domain ~= "" then
-                    visitors[client].domain = domain
-                end
+            local outcome = "unknown"
+            if status == 444 or (status == 400 and domain == "_") then
+                outcome = "blocked"
+            elseif status and (status >= 500 or status == 499) then
+                outcome = "error"
+            elseif status and upstream and upstream ~= "" and upstream ~= "-" then
+                outcome = "forwarded"
+            elseif status and status >= 100 and status < 400 then
+                outcome = "responded"
+            elseif status and status >= 400 then
+                outcome = "error"
             end
+            if not visitors[client] then
+                visitors[client] = { count = 0, forwarded_count = 0, blocked_count = 0, other_count = 0 }
+                order[#order + 1] = client
+            end
+            local v = visitors[client]
+            v.last_time, v.domain, v.status, v.outcome = time, domain or "", status, outcome
+            v.count = v.count + 1
+            local counter = outcome == "forwarded" and "forwarded_count" or
+                (outcome == "blocked" and "blocked_count" or "other_count")
+            v[counter] = v[counter] + 1
         end
     end
 
@@ -405,19 +419,24 @@ function action_proxy_access()
     for i = 1, math.min(#order, limit) do
         local ip = order[i]
         local v = visitors[ip]
-        -- 解析 ISO 时间判断是否在线（5分钟内）
-        local online = false
+        -- 仅表示最近有请求，不能据此推断访客在线或已通过准入。
+        local recent = false
         local y,mo,da,h,mi,se = v.last_time:match("(%d+)-(%d+)-(%d+)T(%d+):(%d+):(%d+)")
         if y then
             local ts = os.time({year=tonumber(y),month=tonumber(mo),day=tonumber(da),hour=tonumber(h),min=tonumber(mi),sec=tonumber(se)})
-            online = (now - ts) < 300
+            recent = now >= ts and (now - ts) < 300
         end
         result[#result + 1] = {
             ip = ip,
             last_time = v.last_time,
             domain = v.domain,
             count = v.count,
-            online = online
+            recent = recent,
+            outcome = v.outcome,
+            status = v.status,
+            forwarded_count = v.forwarded_count,
+            blocked_count = v.blocked_count,
+            other_count = v.other_count
         }
     end
 

@@ -102,6 +102,35 @@ test('overview polling pauses in a hidden tab and refreshes when visible again',
     assert.deepEqual(page.requests.map(item => item.url).sort(), ['au', 'su']);
 });
 
+test('overview distinguishes request results and never labels blocked requests as online', () => {
+    const page = fakePage(overviewScript);
+    const visitors = ['blocked', 'forwarded', 'responded', 'error', 'unknown'].map((outcome, i) => ({
+        ip: '198.51.100.' + (i + 1), last_time: '2026-10-26T11:59:00+08:00', domain: 'app.example.com',
+        outcome, status: [444, 403, 308, 502, null][i], recent: i === 0,
+        count: 6, blocked_count: i === 0 ? 0 : 1, forwarded_count: 2, other_count: 3
+    }));
+    take(page, 'au').callback(null, { visitors });
+    const html = page.element('mg-v-list').innerHTML;
+    for (const label of ['已拦截', '已转发', '已响应', '请求失败', '结果未知', 'HTTP 444', 'HTTP 403',
+        '无状态码', '近5分钟有请求', '5分钟内无新请求', '总计 6', '拦截 1 · 转发 2 · 其他 3', '拦截 0 · 转发 2 · 其他 3']) {
+        assert.ok(html.includes(label), label);
+    }
+    assert.doesNotMatch(html, /在线|离线|mg-dot/);
+});
+
+test('overview renders legacy visitor responses as unknown and escapes log content', () => {
+    const page = fakePage(overviewScript);
+    take(page, 'au').callback(null, { visitors: [{
+        ip: '198.51.100.1', domain: '<img src=x onerror=alert(1)>', count: 1,
+        last_time: '2026-10-26T11:59:00+08:00', online: true
+    }] });
+    const html = page.element('mg-v-list').innerHTML;
+    assert.match(html, /结果未知/);
+    assert.match(html, /请求时间未知/);
+    assert.match(html, /&lt;img/);
+    assert.doesNotMatch(html, /<img|已转发|在线|离线|拦截 undefined/);
+});
+
 test('login guard renders empty JSON objects as empty lists and uses POST for changes', () => {
     const page = fakePage(loginGuardScript);
     take(page, 'lu').callback(null, { enabled: '1', running: true, banned: {}, banned_total: 0, watching: {}, watching_total: 0, threshold: 3 });

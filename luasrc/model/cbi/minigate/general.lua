@@ -57,8 +57,8 @@ o.cfgvalue = function()
 .mg-table tr:nth-child(even) td{background:var(--mg-surface-alt)}
 .mg-table tr:hover td{background:var(--mg-surface-hover)}
 .mg-status{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
-.mg-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#777}
-.mg-dot.on{background:var(--mg-success);box-shadow:0 0 0 3px rgba(47,158,68,.14)}
+.mg-request-result{display:flex;flex-direction:column;gap:4px}
+.mg-request-detail{font-size:11px;color:var(--mg-text-muted);line-height:1.5;white-space:normal}
 .mg-ip{display:inline-block;border-radius:6px;background:var(--mg-code-bg);color:var(--mg-text);padding:2px 7px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px}
 .mg-empty{padding:18px 16px;color:var(--mg-text-muted);font-size:12px}
 .mg-update-body{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:15px 16px;flex-wrap:wrap}
@@ -105,9 +105,9 @@ o.cfgvalue = function()
 .mg-table td:nth-child(1){order:2;justify-content:flex-end}
 .mg-table td:nth-child(n+3){order:3;grid-column:1/-1}
 .mg-table td:nth-child(3):before{content:"归属地"}
-.mg-table td:nth-child(4):before{content:"最后访问"}
+.mg-table td:nth-child(4):before{content:"最后请求"}
 .mg-table td:nth-child(5):before{content:"域名"}
-.mg-table td:nth-child(6):before{content:"次数"}
+.mg-table td:nth-child(6):before{content:"请求次数"}
 .mg-table td:before{flex:0 0 auto;color:var(--mg-text-muted)}
 }
 </style>
@@ -173,6 +173,7 @@ o.cfgvalue = function()
 <option value="50">50</option>
 </select>条</label>
 </div>
+<div class="mg-request-detail" style="padding:10px 16px">包含被拦截的请求；结果对应最后一次请求，次数为最近日志内按 IP 汇总。已转发不代表已登录。</div>
 <div id="mg-v-list" class="mg-table-wrap"><div class="mg-empty">加载中...</div></div>
 </div>
 
@@ -286,20 +287,24 @@ function loadVisitors(force){
         }
         ct.textContent='('+visitors.length+' 个IP)';
         var h='<table class="mg-table">';
-        h+='<thead><tr><th>状态</th><th>IP 地址</th><th>归属地</th><th>最后访问</th><th>域名</th><th>次数</th></tr></thead><tbody>';
+        h+='<thead><tr><th>最近结果</th><th>IP 地址</th><th>归属地</th><th>最后请求</th><th>域名</th><th>请求次数</th></tr></thead><tbody>';
         for(var i=0;i<visitors.length;i++){
             var v=visitors[i];
-            var dot=v.online
-                ?'<span class="mg-dot on" title="在线"></span>'
-                :'<span class="mg-dot" title="离线"></span>';
-            var stxt=v.online?'<span style="color:'+mgColor('success')+'">在线</span>':'<span style="color:'+mgColor('muted')+'">离线</span>';
+            var outcomes={blocked:['已拦截','danger'],forwarded:['已转发','success'],responded:['已响应','info'],error:['请求失败','warning']};
+            var outcome=outcomes[v.outcome]||['结果未知','muted'];
+            var status=typeof v.status==='number'?('HTTP '+v.status):'无状态码';
+            var activity=typeof v.recent==='boolean'?(v.recent?'近5分钟有请求':'5分钟内无新请求'):'请求时间未知';
             h+='<tr>';
-            h+='<td><span class="mg-status">'+dot+stxt+'</span></td>';
+            h+='<td><div class="mg-request-result"><span class="mg-status" style="color:'+mgColor(outcome[1])+'">'+outcome[0]+'</span><span class="mg-request-detail">'+escHtml(status)+'</span></div></td>';
             h+='<td><code class="mg-ip">'+escHtml(v.ip)+'</code></td>';
             h+='<td id="geo-'+i+'">'+mgGeoHtml(_geoCache[v.ip])+'</td>';
-            h+='<td style="white-space:nowrap">'+escHtml(fmtT(v.last_time))+'</td>';
+            h+='<td style="white-space:nowrap"><div class="mg-request-result"><span>'+escHtml(fmtT(v.last_time))+'</span><span class="mg-request-detail">'+activity+'</span></div></td>';
             h+='<td>'+escHtml(v.domain)+'</td>';
-            h+='<td>'+escHtml(v.count)+'</td>';
+            h+='<td><div class="mg-request-result"><span>总计 '+escHtml(String(v.count))+'</span>';
+            if(typeof v.blocked_count==='number'&&typeof v.forwarded_count==='number'&&typeof v.other_count==='number'){
+                h+='<span class="mg-request-detail">拦截 '+escHtml(String(v.blocked_count))+' · 转发 '+escHtml(String(v.forwarded_count))+' · 其他 '+escHtml(String(v.other_count))+'</span>';
+            }
+            h+='</div></td>';
             h+='</tr>';
         }
         h+='</tbody></table>';

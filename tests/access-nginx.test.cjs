@@ -78,6 +78,13 @@ test('real nginx enforces source policy before upstream, redirect and websocket'
     assert.equal(fixture.reached(), reached, '拒绝的请求不得到达后端');
     assert.match(await request(fixture.redirectPath, '14.196.0.1'), /308 Permanent Redirect/);
     assert.match(await request(fixture.socketPath, '14.196.0.1', { websocket: true }), /101 Switching Protocols/);
+    const rows = fs.readFileSync(path.join(fixture.dir, 'access.log'), 'utf8').trim().split('\n').map(JSON.parse);
+    assert.ok(rows.some(row => row.status === 200 && row.upstream_status === '200'));
+    assert.ok(rows.some(row => row.status === 101 && row.upstream_status === '101'));
+    assert.ok(rows.some(row => row.status === 308 && !row.upstream_status));
+    const blocked = rows.filter(row => row.status === 444);
+    assert.equal(blocked.length, 18);
+    assert.ok(blocked.every(row => !row.upstream_status), '被拒绝请求没有上游响应');
 });
 
 test('real nginx permits all sources when disabled and fails closed if selected data is missing', { skip: !nginx }, async t => {

@@ -2,9 +2,9 @@
 
 一个类似 Lucky 的轻量级 OpenWrt 应用，提供四大核心功能：DDNS、SSL 证书、反向代理、登录防护。
 
-当前版本：**v2026.10.25**。项目名称、仓库名及 OpenWrt 内部包名均为 **`minigate`**。
+当前版本：**v2026.10.26**。项目名称、仓库名及 OpenWrt 内部包名均为 **`minigate`**。
 
-> OpenWrt 用户请从 [Releases](https://github.com/tpxcer/minigate/releases/latest) 下载 `minigate_2026.10.25_all.ipk`。不要把 GitHub 自动生成的 `Source code (zip)` / `Source code (tar.gz)` 当安装包上传到 LuCI。
+> OpenWrt 用户请从 [Releases](https://github.com/tpxcer/minigate/releases/latest) 下载 `minigate_2026.10.26_all.ipk`。不要把 GitHub 自动生成的 `Source code (zip)` / `Source code (tar.gz)` 当安装包上传到 LuCI。
 
 ## 项目定位
 
@@ -74,8 +74,8 @@ minigate 面向需要自托管轻量网关能力的 OpenWrt / ImmortalWrt 用户
 - 后台 watchdog 每 5 分钟自检 nft set，防 fw4 reload 后规则丢失
 
 ### 👁 访客追踪
-- 总览页面实时显示访客 IP、归属地、在线状态
-- 5 分钟内有访问记为「在线」（绿点），否则「离线」（灰点）
+- 总览页面显示来源 IP、归属地、最近请求结果、HTTP 状态及转发/拦截次数；被拒绝的扫描也保留在记录中
+- 「近5分钟有请求」仅表示近期出现请求，不代表访客在线；已转发也不代表已登录。旧日志缺少上游响应信息时，只能标记为已响应、请求失败或结果未知，不推断为准入放行
 - IP 归属地后端查询（ip9.com.cn → ip-api.com → pconline 多源回退）
 
 ### 软件更新
@@ -93,20 +93,20 @@ minigate 面向需要自托管轻量网关能力的 OpenWrt / ImmortalWrt 用户
 
 从 [Releases](https://github.com/tpxcer/minigate/releases/latest) 下载：
 
-`minigate_2026.10.25_all.ipk`
+`minigate_2026.10.26_all.ipk`
 
 **通过 LuCI 界面安装：**
 1. 打开 LuCI → **系统** → **软件包**
 2. 点击 **上传软件包**
-3. 选择 `minigate_2026.10.25_all.ipk`，点击安装
+3. 选择 `minigate_2026.10.26_all.ipk`，点击安装
 
 **通过命令行安装：**
 
 ```bash
 cd /tmp
-wget -O minigate_2026.10.25_all.ipk https://github.com/tpxcer/minigate/releases/download/v2026.10.25/minigate_2026.10.25_all.ipk
+wget -O minigate_2026.10.26_all.ipk https://github.com/tpxcer/minigate/releases/download/v2026.10.26/minigate_2026.10.26_all.ipk
 opkg update
-opkg install /tmp/minigate_2026.10.25_all.ipk
+opkg install /tmp/minigate_2026.10.26_all.ipk
 rm -f /tmp/luci-indexcache /tmp/luci-modulecache 2>/dev/null
 /etc/init.d/uhttpd restart
 /etc/init.d/minigate restart
@@ -125,7 +125,7 @@ Release 用的 `.ipk` 请用仓库脚本生成，避免生成 Debian 风格 ar �
 脚本会输出：
 
 ```text
-dist/minigate_2026.10.25_all.ipk
+dist/minigate_2026.10.26_all.ipk
 ```
 
 该文件外层是 OpenWrt/ImmortalWrt 24.10 兼容的 `tar.gz`，内部成员顺序为 `debian-binary`、`control.tar.gz`、`data.tar.gz`。
@@ -153,7 +153,7 @@ wget -qO- https://raw.githubusercontent.com/tpxcer/minigate/main/scripts/install
 需要指定并核对具体版本时，执行：
 
 ```bash
-d="$(mktemp -d /tmp/minigate.XXXXXX)" && cd "$d" && wget -q https://github.com/tpxcer/minigate/releases/download/v2026.10.25/minigate-v2026.10.25-src.tar.gz && wget -q https://github.com/tpxcer/minigate/releases/download/v2026.10.25/SHA256SUMS && grep 'minigate-v2026.10.25-src.tar.gz$' SHA256SUMS | sha256sum -c - && tar xzf minigate-v2026.10.25-src.tar.gz && sh install.sh && /etc/init.d/uhttpd restart && /etc/init.d/minigate restart
+d="$(mktemp -d /tmp/minigate.XXXXXX)" && cd "$d" && wget -q https://github.com/tpxcer/minigate/releases/download/v2026.10.26/minigate-v2026.10.26-src.tar.gz && wget -q https://github.com/tpxcer/minigate/releases/download/v2026.10.26/SHA256SUMS && grep 'minigate-v2026.10.26-src.tar.gz$' SHA256SUMS | sha256sum -c - && tar xzf minigate-v2026.10.26-src.tar.gz && sh install.sh && /etc/init.d/uhttpd restart && /etc/init.d/minigate restart
 ```
 
 其中 `minigate.XXXXXX` 是临时目录模板，系统会自动把六个 `X` 替换为随机字符，避免与已有目录重名。该命令会校验源码包的 SHA-256、保留现有 minigate 配置并重启 LuCI 与 minigate 服务。
@@ -168,14 +168,14 @@ ssh root@192.168.1.1
 
 # 2. 在路由器上直接下载 Release 源码包
 cd /tmp
-wget -O minigate-src.tar.gz https://github.com/tpxcer/minigate/releases/download/v2026.10.25/minigate-v2026.10.25-src.tar.gz
-wget -O minigate-SHA256SUMS https://github.com/tpxcer/minigate/releases/download/v2026.10.25/SHA256SUMS
-awk '$2 == "minigate-v2026.10.25-src.tar.gz" {print $1 "  minigate-src.tar.gz"}' minigate-SHA256SUMS | sha256sum -c - || exit 1
+wget -O minigate-src.tar.gz https://github.com/tpxcer/minigate/releases/download/v2026.10.26/minigate-v2026.10.26-src.tar.gz
+wget -O minigate-SHA256SUMS https://github.com/tpxcer/minigate/releases/download/v2026.10.26/SHA256SUMS
+awk '$2 == "minigate-v2026.10.26-src.tar.gz" {print $1 "  minigate-src.tar.gz"}' minigate-SHA256SUMS | sha256sum -c - || exit 1
 
 # 3. 解压到独立目录并安装
-mkdir -p /tmp/minigate-v2026.10.25
-tar xzf minigate-src.tar.gz -C /tmp/minigate-v2026.10.25
-cd /tmp/minigate-v2026.10.25
+mkdir -p /tmp/minigate-v2026.10.26
+tar xzf minigate-src.tar.gz -C /tmp/minigate-v2026.10.26
+cd /tmp/minigate-v2026.10.26
 sh install.sh
 
 # 4. 启动服务
@@ -225,7 +225,7 @@ SSH 登录后执行上方「方法 2」的一条命令，保留原有配置并�
 ### IPK 升级
 
 ```bash
-opkg install --force-reinstall /tmp/minigate_2026.10.25_all.ipk
+opkg install --force-reinstall /tmp/minigate_2026.10.26_all.ipk
 rm -f /tmp/luci-indexcache /tmp/luci-modulecache 2>/dev/null
 /etc/init.d/minigate restart
 ```
@@ -407,6 +407,11 @@ minigate/
 - `nftables` - 登录防护用（OpenWrt 22.03+ / ImmortalWrt 默认已装）
 
 ## 更新日志
+
+### v2026.10.26
+- 访问记录区分「已拦截、已转发、已响应、请求失败、结果未知」，显示最近请求的 HTTP 状态与拦截/转发/其他次数
+- 「在线/离线」改为近期请求说明，避免把被拒绝的外地扫描误认为访问成功；保留拦截记录便于核查
+- 新日志记录上游响应，后端 401/403 不误判为地区拦截；兼容旧日志，缺少信息时不推断转发或登录成功
 
 ### v2026.10.25
 - 新增可配置的「公网访问范围」：选择一个或多个省级地区，仅允许匹配的公网 IP 访问所有反代站点，其他及未知来源在首次转发前直接断开
