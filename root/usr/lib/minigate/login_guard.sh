@@ -208,7 +208,8 @@ ensure_nft() {
 
 # 防火墙重载后，随包的集合会重新出现但内容为空；持久化文件里仍有未过期封禁时恢复
 sets_lost_bans() {
-    local now set
+    # ip/exp 必须是局部变量：shell 的 local 是动态作用域，读到文件末尾会清空调用方的 ip
+    local now set ip exp
     now=$(date +%s)
     for set in "$SET4" "$SET6"; do
         nft list set $TABLE $set 2>/dev/null | grep -q 'elements' && continue
@@ -255,7 +256,7 @@ restore_bans() {
     local now=$(date +%s)
     local tmp="${BANS_FILE}.tmp"
     > "$tmp"
-    local count=0
+    local count=0 ip exp
     while read -r ip exp; do
         [ -z "$ip" ] && continue
         case "$exp" in ''|*[!0-9]*) continue ;; esac

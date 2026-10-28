@@ -178,3 +178,38 @@ test('upgrades stop the old login guard tree before running the previous init sc
     assert.ok(treeStop > 0 && treeStop < initStop, 'installer must stop the login guard tree before the old init script');
     assert.match(installer, /stop_process_tree\(\) \{[\s\S]*pgrep -P "\$1"/);
 });
+
+// 回归：v2026.10.28 中修复防火墙时读取 bans.txt 的循环变量覆盖了调用方的 ip，
+// 达到阈值后用空地址封禁，日志出现「封禁  失败」，攻击者再也不会被封。
+test('reaching the threshold bans the attacking address even when other bans are persisted', () => {
+    for (const setsEmpty of [false, true]) {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'minigate-lg-threshold-'));
+        const dataDir = path.join(dir, 'data');
+        const calls = path.join(dir, 'nft.log');
+        fs.mkdirSync(dataDir);
+        fs.writeFileSync(path.join(dataDir, 'bans.txt'), '111.170.34.182 9999999999\n185.246.128.170 9999999999\n');
+        const result = spawnSync('/bin/sh', ['-c', `
+            logger() { :; }
+            uci() { case "$3" in minigate.login_guard.threshold) echo 3 ;; *) return 1 ;; esac; }
+            nft() {
+                printf '%s\\n' "$*" >> ${JSON.stringify(calls)}
+                case "$*" in
+                    'list set inet fw4 login_banned_v4'|'list set inet fw4 login_banned_v6') [ ${setsEmpty ? 1 : 0} = 1 ] || echo 'elements = { 111.170.34.182 }' ;;
+                    'list chain inet fw4 input') echo '@login_banned_v4 @login_banned_v6' ;;
+                esac
+                return 0
+            }
+            export MINIGATE_LG_LIBRARY_ONLY=1 MINIGATE_LG_DATA_DIR=${JSON.stringify(dataDir)}
+            export MINIGATE_LG_RUN_DIR=${JSON.stringify(path.join(dir, 'run'))} MINIGATE_LG_LOG=${JSON.stringify(path.join(dir, 'lg.log'))}
+            . ${JSON.stringify(script)}
+            for i in 1 2 3; do handle_failure 139.162.161.162; done
+        `], { encoding: 'utf8' });
+        assert.equal(result.status, 0, result.stderr);
+        const log = fs.readFileSync(path.join(dir, 'lg.log'), 'utf8');
+        assert.match(fs.readFileSync(calls, 'utf8'), /add element inet fw4 login_banned_v4 \{ 139\.162\.161\.162 timeout 43200s \}/, `setsEmpty=${setsEmpty}`);
+        assert.match(log, /BAN 139\.162\.161\.162 12小时（达到 3 次失败）/);
+        assert.doesNotMatch(log, /封禁 +失败/);
+        assert.match(fs.readFileSync(path.join(dataDir, 'bans.txt'), 'utf8'), /^139\.162\.161\.162 \d+$/m);
+        assert.equal(fs.existsSync(path.join(dir, 'run/counters/139.162.161.162')), false, 'counter is cleared after a ban');
+    }
+});
