@@ -1,0 +1,3 @@
+# MiniGate 登录防护：放在 input 链最前，已建立的连接也会被断开
+ip saddr @login_banned_v4 counter drop comment "minigate-login-guard"
+ip6 saddr @login_banned_v6 counter drop comment "minigate-login-guard"

@@ -64,17 +64,36 @@ test('HTTP redirect rejects unapproved source before sending a redirect', () => 
     assert.ok(result.conf.indexOf('return 444;') < result.conf.indexOf('return 308'));
 });
 
-test('the legacy scanner cannot add global firewall bans in request access mode', () => {
-    const scanner = path.join(root, 'root/usr/lib/minigate/geofence.sh');
+test('the installer removes the legacy scanner and its global firewall set', () => {
+    const installer = fs.readFileSync(path.join(root, 'install.sh'), 'utf8');
+    const init = fs.readFileSync(path.join(root, 'root/etc/init.d/minigate'), 'utf8');
+    assert.equal(fs.existsSync(path.join(root, 'root/usr/lib/minigate/geofence.sh')), false);
+    assert.doesNotMatch(init, /geofence/);
+    assert.match(installer, /rm -f \/usr\/lib\/minigate\/after_commit\.sh \/usr\/lib\/minigate\/geofence\.sh/);
+    assert.match(installer, /nft delete set inet fw4 minigate_blocked/);
+    assert.match(installer, /uci -q delete minigate\.global\.blocked_ips/);
+});
+
+test('legacy province names migrate to request access region codes', () => {
+    const installer = fs.readFileSync(path.join(root, 'install.sh'), 'utf8');
+    const body = installer.slice(installer.indexOf('migrate_legacy_geofence() {'), installer.indexOf('\nmigrate_legacy_geofence\n'));
     const result = spawnSync('/bin/sh', ['-c', `
-        export MINIGATE_GEOFENCE_LIBRARY_ONLY=1
-        . '${scanner}'
-        uci() { [ "$3" = minigate.global.access_enabled ] && echo 1; }
-        init_block_set() { echo unexpected >&2; return 1; }
-        scan_and_block
+        D=${JSON.stringify(root)}
+        uci() {
+            case "$*" in
+                '-q get minigate.global.geo_enabled') echo 1 ;;
+                '-q get minigate.global.access_enabled') echo 0 ;;
+                '-q get minigate.global.geo_allowed') echo '四川,重庆' ;;
+                *) echo "uci $*" ;;
+            esac
+        }
+        ${body}
+        migrate_legacy_geofence
     `], { encoding: 'utf8' });
     assert.equal(result.status, 0, result.stderr);
-    assert.equal(result.stderr, '');
+    assert.match(result.stdout, /add_list minigate\.global\.access_regions=510000/);
+    assert.match(result.stdout, /add_list minigate\.global\.access_regions=500000/);
+    assert.match(result.stdout, /set minigate\.global\.access_enabled=1/);
 });
 
 test('bundled regions all cover IPv4 and IPv6 and data follows every install path', () => {

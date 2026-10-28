@@ -2,13 +2,10 @@ local m, s, o
 local sys = require "luci.sys"
 local fs = require "nixio.fs"
 
-m = Map("minigate", "登录防护 (Login Guard)",
-    "监控 SSH（dropbear）和 LuCI 网页登录失败，达到阈值自动封禁源 IP。" ..
-    "适用于 SSH 端口被映射到公网、防爆破。LAN 私有 IP 自动豁免。")
-
-m.on_after_commit = function(self)
-    sys.call("/bin/sh /usr/lib/minigate/after_commit.sh reload >/dev/null 2>&1")
-end
+-- 保存并应用后由 procd 按新配置重启登录防护
+m = Map("minigate", "MiniGate - 登录防护",
+    "监控 SSH（dropbear）和 LuCI 网页登录失败，达到阈值自动封禁源 IP，支持 IPv4 和 IPv6。" ..
+    "适用于 SSH 端口被映射到公网、防爆破。LAN 私有地址自动豁免。")
 
 -- ============== 实时状态 ==============
 s = m:section(NamedSection, "login_guard", "login_guard", "实时状态")
@@ -106,6 +103,9 @@ o.cfgvalue = function()
 .lg-btn{height:30px;border:0;border-radius:6px;padding:0 12px;font-size:12px;color:#fff;cursor:pointer}
 .lg-btn-primary{background:var(--lg-primary)}
 .lg-btn-danger{background:var(--lg-danger)}
+.lg-panel-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:12px 16px;border-top:1px solid var(--lg-border-soft)}
+.lg-foot-note{color:var(--lg-text-muted);font-size:12px}
+.lg-btn-outline-danger{height:30px;border:1px solid var(--lg-danger);border-radius:6px;padding:0 12px;background:transparent;color:var(--lg-danger);font-size:12px;cursor:pointer}
 .lg-table-wrap{overflow-x:auto}
 .lg-table{width:100%;border-collapse:collapse;min-width:720px}
 .lg-table th{padding:10px 12px;color:var(--lg-text-muted);font-size:11px;font-weight:600;text-align:left;border-bottom:1px solid var(--lg-border);background:var(--lg-surface-muted)}
@@ -166,12 +166,15 @@ o.cfgvalue = function()
           <option value="30">30 条</option>
         </select>
       </label>
-      <input id="lg-ban-input" class="lg-input" type="text" placeholder="输入 IP 手动封禁" />
-      <button class="lg-btn lg-btn-primary" onclick="lgManualBan()">封禁</button>
-      <button class="lg-btn lg-btn-danger" onclick="lgFlushAll()">清空全部</button>
+      <input id="lg-ban-input" class="lg-input" type="text" placeholder="输入 IPv4 或 IPv6 手动封禁" />
+      <button type="button" class="lg-btn lg-btn-primary" onclick="lgManualBan()">封禁</button>
     </div>
   </div>
   <div id="lg-banned-list" class="lg-table-wrap"><div class="lg-empty">加载中...</div></div>
+  <div class="lg-panel-foot">
+    <span class="lg-foot-note">清空后所有已封禁 IP 立即恢复访问，无法撤销。</span>
+    <button type="button" class="lg-btn-outline-danger" onclick="lgFlushAll()">清空全部封禁</button>
+  </div>
 </div>
 
 <div class="lg-panel">
@@ -293,7 +296,7 @@ function lgUnban(ip,btn){
 function lgManualBan(){
     var ip=document.getElementById('lg-ban-input').value.trim();
     if(!ip){alert('请输入 IP');return;}
-    if(!ip.match(/^\d+\.\d+\.\d+\.\d+$/)){alert('IP 格式不对');return;}
+    if(!ip.match(/^\d+\.\d+\.\d+\.\d+$/)&&!(ip.match(/^[0-9a-fA-F:]+$/)&&ip.split(':').length>2)){alert('IP 格式不对');return;}
     lgRequest('post',']] .. bu .. [[',{ip:ip},function(x,d){
         if(d&&d.success){
             document.getElementById('lg-ban-input').value='';
@@ -470,12 +473,12 @@ o.description = "开启后将自动监控 SSH/LuCI 失败登录。LAN IP 永远�
 o.rmempty = false
 
 o = s:option(Value, "threshold", "失败次数阈值")
-o.description = "在「失败窗口」时间内累积达到此次数则封禁。"
-o.datatype = "uinteger"
+o.description = "在「失败窗口」时间内累积达到此次数则封禁，范围 1-100。"
+o.datatype = "range(1,100)"
 o.default = "3"
 o.placeholder = "3"
 
-o = s:option(ListValue, "window", "失败窗口（秒）")
+o = s:option(ListValue, "window", "失败窗口")
 o.description = "在多长时间内累计失败次数。超过此时间未再失败则计数清零。"
 o:value("300", "5 分钟")
 o:value("600", "10 分钟")
@@ -494,8 +497,22 @@ o:value("2592000", "30 天")
 o.default = "43200"
 
 o = s:option(DynamicList, "whitelist", "白名单（额外）")
-o.description = "除了 LAN 私有段（192.168.x、10.x、127.x、172.16-31.x）默认豁免外，再加这些 IP/CIDR。" ..
-                "支持单 IP（如 1.2.3.4）或 /8 /16 /24 /32 子网。"
-o.placeholder = "如 8.8.8.8 或 203.0.113.0/24"
+o.description = "LAN 私有地址（192.168.x、10.x、172.16-31.x、IPv6 fd/fe80）和 LAN 分配的 IPv6 子网默认豁免，" ..
+                "这里再加其他 IP 或子网，支持 IPv4/IPv6 和任意前缀长度。"
+o.placeholder = "如 8.8.8.8、203.0.113.0/24 或 2001:db8::/48"
+-- 只接受地址或「地址/前缀长度」，与 login_guard.sh 的匹配方式一致
+o.validate = function(self, value)
+    local dt = require "luci.cbi.datatypes"
+    local values = type(value) == "table" and value or {value}
+    for _, item in ipairs(values) do
+        item = tostring(item or "")
+        local addr, bits = item:match("^([^/]+)/(%d+)$")
+        addr = addr or item
+        bits = tonumber(bits)
+        local ok = (dt.ip4addr(addr) and (not bits or bits <= 32)) or (dt.ip6addr(addr) and (not bits or bits <= 128))
+        if not ok then return nil, "白名单格式不正确：" .. item end
+    end
+    return value
+end
 
 return m

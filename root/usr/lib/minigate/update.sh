@@ -3,7 +3,7 @@
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 
-CURRENT_VERSION="2026.10.26"
+CURRENT_VERSION="2026.10.28"
 REPOSITORY="tpxcer/minigate"
 API_URL="https://api.github.com/repos/${REPOSITORY}/releases/latest"
 DOWNLOAD_ROOT="https://github.com/${REPOSITORY}/releases/download"
@@ -159,7 +159,9 @@ backup_program() {
         usr/lib/minigate \
         usr/lib/lua/luci/controller/minigate.lua \
         usr/lib/lua/luci/model/cbi/minigate \
-        usr/lib/lua/luci/view/minigate; do
+        usr/lib/lua/luci/view/minigate \
+        usr/share/nftables.d/table-pre/20-minigate-login-guard.nft \
+        usr/share/nftables.d/chain-pre/input/20-minigate-login-guard.nft; do
         [ -e "/$path" ] && paths="$paths $path"
     done
 

@@ -8,24 +8,29 @@ const { spawn, spawnSync } = require('node:child_process');
 const root = path.resolve(__dirname, '..');
 const script = path.join(root, 'root/usr/lib/minigate/login_guard.sh');
 
-function runRepair({ firewallReady }) {
+// firewallReady: 集合和规则都在；setsEmpty: 防火墙重载后随包集合存在但内容为空
+function runRepair({ firewallReady, setsEmpty = false }) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'minigate-login-guard-test-'));
     const dataDir = path.join(dir, 'data');
     const bans = path.join(dataDir, 'bans.txt');
     const calls = path.join(dir, 'nft.log');
     fs.mkdirSync(dataDir, { recursive: true });
-    fs.writeFileSync(bans, '198.51.100.4 9999999999\n198.51.100.5 1\n');
+    fs.writeFileSync(bans, '198.51.100.4 9999999999\n198.51.100.5 1\n2001:db8::9 9999999999\n');
     const before = fs.statSync(bans).ino;
 
     const command = `
         set -u
         logger() { :; }
         uci() { return 1; }
+        ubus() { return 1; }
         nft() {
             printf '%s\\n' "$*" >> ${JSON.stringify(calls)}
             case "$*" in
-                'list set inet fw4 login_banned_v4') [ ${firewallReady ? 1 : 0} = 1 ]; return ;;
-                'list chain inet fw4 input') [ ${firewallReady ? 1 : 0} = 1 ] && printf 'ip saddr @login_banned_v4 counter drop\\n'; return 0 ;;
+                'list set inet fw4 login_banned_v4'|'list set inet fw4 login_banned_v6')
+                    [ ${firewallReady ? 1 : 0} = 1 ] || return 1
+                    [ ${setsEmpty ? 1 : 0} = 1 ] || printf 'elements = { 198.51.100.4 }\\n'
+                    return 0 ;;
+                'list chain inet fw4 input') [ ${firewallReady ? 1 : 0} = 1 ] && printf 'ip saddr @login_banned_v4 counter drop\\nip6 saddr @login_banned_v6 counter drop\\n'; return 0 ;;
             esac
             return 0
         }
@@ -52,56 +57,118 @@ test('periodic nft check does not rewrite the persisted ban list when rules are 
     assert.equal(scenario.rewritten, false, 'bans.txt must not be rewritten on every watchdog tick');
 });
 
-test('a firewall reload that drops the set restores persisted bans immediately', () => {
+test('a firewall reload that drops the set restores persisted IPv4 and IPv6 bans immediately', () => {
     const scenario = runRepair({ firewallReady: false });
     assert.equal(scenario.result.status, 0, scenario.result.stderr);
-    assert.match(scenario.calls, /add set inet fw4 login_banned_v4/);
+    assert.match(scenario.calls, /add set inet fw4 login_banned_v4 \{ type ipv4_addr; flags timeout; \}/);
+    assert.match(scenario.calls, /add set inet fw4 login_banned_v6 \{ type ipv6_addr; flags timeout; \}/);
     assert.match(scenario.calls, /insert rule inet fw4 input ip saddr @login_banned_v4/);
+    assert.match(scenario.calls, /insert rule inet fw4 input ip6 saddr @login_banned_v6/);
     assert.match(scenario.calls, /add element inet fw4 login_banned_v4 \{ 198\.51\.100\.4 timeout \d+s \}/);
+    assert.match(scenario.calls, /add element inet fw4 login_banned_v6 \{ 2001:db8::9 timeout \d+s \}/);
     assert.doesNotMatch(scenario.calls, /198\.51\.100\.5/, 'expired bans must not be restored');
-    assert.equal(scenario.bans, '198.51.100.4 9999999999\n');
+    assert.equal(scenario.bans, '198.51.100.4 9999999999\n2001:db8::9 9999999999\n');
 });
 
-// BusyBox pgrep 只排除自身，不像 macOS 那样默认排除祖先进程。
-function busyboxPgrep(dir) {
-    const shim = path.join(dir, 'bin/pgrep');
-    fs.mkdirSync(path.dirname(shim), { recursive: true });
-    fs.writeFileSync(shim, `#!/bin/sh
-self=$$
-case "$1" in
-    -f) ps -A -o pid= -o ppid= -o args= | awk -v self="$self" -v re="$2" '
-            { pid=$1; ppid=$2; if (pid == self || ppid == self) next; $1=""; $2=""; sub(/^ +/, ""); if ($0 ~ re) print pid }' ;;
-    -P) ps -A -o pid= -o ppid= | awk -v self="$self" -v parent="$2" '$2 == parent && $1 != self { print $1 }' ;;
-esac
-`);
-    fs.chmodSync(shim, 0o755);
-    return path.dirname(shim);
+test('packaged firewall sets that come back empty after a reload are refilled', () => {
+    const scenario = runRepair({ firewallReady: true, setsEmpty: true });
+    assert.equal(scenario.result.status, 0, scenario.result.stderr);
+    assert.doesNotMatch(scenario.calls, /add set|insert rule/);
+    assert.match(scenario.calls, /add element inet fw4 login_banned_v4 \{ 198\.51\.100\.4 timeout \d+s \}/);
+});
+
+test('fw4 includes declare both ban sets before the input rules that use them', () => {
+    const tablePre = fs.readFileSync(path.join(root, 'root/usr/share/nftables.d/table-pre/20-minigate-login-guard.nft'), 'utf8');
+    const chainPre = fs.readFileSync(path.join(root, 'root/usr/share/nftables.d/chain-pre/input/20-minigate-login-guard.nft'), 'utf8');
+    assert.match(tablePre, /set login_banned_v4 \{\n\ttype ipv4_addr\n\tflags timeout\n\}/);
+    assert.match(tablePre, /set login_banned_v6 \{\n\ttype ipv6_addr\n\tflags timeout\n\}/);
+    assert.match(chainPre, /^ip saddr @login_banned_v4 counter drop comment "minigate-login-guard"$/m);
+    assert.match(chainPre, /^ip6 saddr @login_banned_v6 counter drop comment "minigate-login-guard"$/m);
+    for (const file of ['Makefile', 'install.sh', 'scripts/build-ipk.sh', 'root/usr/lib/minigate/uninstall.sh']) {
+        assert.match(fs.readFileSync(path.join(root, file), 'utf8'), /nftables\.d\/chain-pre\/input\/20-minigate-login-guard\.nft/, file);
+    }
+});
+
+function library(body) {
+    return spawnSync('/bin/sh', ['-c', `
+        export MINIGATE_LG_LIBRARY_ONLY=1
+        export MINIGATE_LG_DATA_DIR=${JSON.stringify(fs.mkdtempSync(path.join(os.tmpdir(), 'minigate-lg-lib-')))}
+        export MINIGATE_LG_RUN_DIR=${JSON.stringify(fs.mkdtempSync(path.join(os.tmpdir(), 'minigate-lg-run-')))}
+        export MINIGATE_LG_LOG=/dev/null
+        logger() { :; }
+        uci() { [ "$3" = minigate.login_guard.whitelist ] && echo "203.0.113.0/20 2001:db8:abcd::/48"; return 0; }
+        . ${JSON.stringify(script)}
+        ${body}
+    `], { encoding: 'utf8' });
 }
 
-test('stopping the login guard ends its children but not a caller that mentions it', async () => {
-    const init = path.join(root, 'root/etc/init.d/minigate');
+test('addresses from dropbear and LuCI logs are parsed for both IP families and spoofed usernames', () => {
+    const result = library(`
+        extract_ip "authpriv.warn dropbear[1]: Bad password attempt for 'root' from 198.51.100.7:52144" 1
+        extract_ip "dropbear[1]: Login attempt for nonexistent user 'x from 9.9.9.9:1' from 2001:db8::7:52144" 1
+        extract_ip "luci: failed login on / for root from 2001:db8::8" 0
+        extract_ip "luci: failed login on / for root from bad;rm" 0 || echo rejected
+    `);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), '198.51.100.7\n2001:db8::7\n2001:db8::8\nrejected');
+});
+
+test('whitelist matches any IPv4 prefix length and IPv6 subnets, private ranges stay exempt', () => {
+    const result = library(`
+        for ip in 203.0.120.9 203.0.128.1 2001:db8:abcd:1::5 2001:db8:abce::5 192.168.2.5 fd00::5 fe80::1 198.51.100.7 2400:da00::1; do
+            is_whitelisted "$ip" && printf 'white:%s ' "$ip" || printf 'watch:%s ' "$ip"
+        done
+    `);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), 'white:203.0.120.9 watch:203.0.128.1 white:2001:db8:abcd:1::5 watch:2001:db8:abce::5 white:192.168.2.5 white:fd00::5 white:fe80::1 watch:198.51.100.7 watch:2400:da00::1');
+});
+
+test('a ban the firewall rejects is reported instead of being logged as banned', () => {
+    const result = library(`
+        nft() { return 1; }
+        ban_ip 198.51.100.9 && echo banned || echo failed
+        cat "$BANS_FILE"
+    `);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), 'failed');
+});
+
+test('procd stopping the login guard ends logread and tail children and lifts enforcement', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'minigate-login-guard-stop-'));
+    const bin = path.join(dir, 'bin');
     const followed = path.join(dir, 'access.log');
-    const guardScript = path.join(dir, 'login_guard.sh');
-    const marker = path.join(dir, 'caller-survived');
+    const nftLog = path.join(dir, 'nft.log');
+    fs.mkdirSync(bin);
     fs.writeFileSync(followed, '');
-    // 与 login_guard.sh run 相同的结构：后台子 shell + tail -f 管道；忽略 SIGPIPE 的 tail 失去读端后不会自行退出
-    fs.writeFileSync(guardScript, `trap "" PIPE\n( while :; do sleep 1; done ) &\ntail -n 0 -f ${JSON.stringify(followed)} | while read -r line; do :; done\n`);
-    const guard = spawn('/bin/sh', [guardScript, 'run'], { detached: true, stdio: 'ignore' });
-    guard.unref();
+    const shim = (name, body) => fs.writeFileSync(path.join(bin, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+    shim('uci', 'case "$3" in minigate.login_guard.enabled) echo 1 ;; *) exit 1 ;; esac');
+    shim('nft', `printf '%s\\n' "$*" >> ${JSON.stringify(nftLog)}; case "$*" in 'list chain'*) echo '@login_banned_v4 @login_banned_v6' ;; 'list set'*) echo elements ;; esac; exit 0`);
+    shim('logger', 'exit 0');
+    shim('ubus', 'exit 1');
+    // logread -f 与 tail -f 一样会一直阻塞，用 tail 模拟
+    shim('logread', `exec tail -n 0 -f ${JSON.stringify(followed)}`);
+    const guard = spawn('/bin/sh', [script, 'run'], {
+        stdio: 'ignore',
+        env: {
+            ...process.env,
+            PATH: `${bin}:${process.env.PATH}`,
+            MINIGATE_LG_DATA_DIR: path.join(dir, 'data'),
+            MINIGATE_LG_RUN_DIR: path.join(dir, 'run'),
+            MINIGATE_LG_LOG: path.join(dir, 'lg.log'),
+            MINIGATE_ACCESS_LOG: followed
+        }
+    });
     const pgrep = pattern => spawnSync('pgrep', ['-f', pattern], { encoding: 'utf8' }).stdout.trim();
     const started = Date.now();
-    while (!pgrep(`tail -n 0 -f ${followed}`) && Date.now() - started < 3000) await new Promise(resolve => setTimeout(resolve, 100));
-    assert.ok(pgrep(`tail -n 0 -f ${followed}`), 'fake login guard did not start');
-
-    // 调用方的命令行里含有登录防护的命令文本（例如 SSH 一次性执行的脚本），不能被当成登录防护结束
-    const caller = `logger() { :; }; nft() { return 1; }; . ${JSON.stringify(init)}; LOGIN_GUARD=${JSON.stringify(guardScript)}; echo "checking ${guardScript} run" >/dev/null; stop_login_guard; echo ok > ${JSON.stringify(marker)}`;
-    const result = spawnSync('/bin/sh', ['-c', caller], { encoding: 'utf8', env: { ...process.env, PATH: `${busyboxPgrep(dir)}:${process.env.PATH}` } });
-    assert.equal(result.status, 0, result.stderr);
-    assert.equal(fs.existsSync(marker), true, 'stop_login_guard killed its own caller');
+    while (pgrep(`tail -n 0 -f ${followed}`).split('\n').filter(Boolean).length < 2 && Date.now() - started < 4000) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    assert.equal(pgrep(`tail -n 0 -f ${followed}`).split('\n').filter(Boolean).length, 2, 'both followers should run');
+    guard.kill('SIGTERM');
+    await new Promise(resolve => guard.once('exit', resolve));
     await new Promise(resolve => setTimeout(resolve, 300));
-    assert.equal(pgrep(`tail -n 0 -f ${followed}`), '', 'tail -f must not be left behind');
-    assert.equal(pgrep(`${guardScript} run`), '');
+    assert.equal(pgrep(`tail -n 0 -f ${followed}`), '', 'tail -f / logread -f must not be left behind');
+    assert.match(fs.readFileSync(nftLog, 'utf8'), /flush set inet fw4 login_banned_v4[\s\S]*flush set inet fw4 login_banned_v6/);
 });
 
 test('upgrades stop the old login guard tree before running the previous init script', () => {

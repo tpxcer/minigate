@@ -6,6 +6,8 @@ CACHE_DIR="${MINIGATE_CACHE_DIR:-/tmp}"
 SINGBOX_CONFIG="${MINIGATE_SINGBOX_CONFIG:-/opt/open-box/etc/config.json}"
 CLASH_API_URL="${MINIGATE_CLASH_API_URL:-http://127.0.0.1:9095}"
 LOCK_FILE="${MINIGATE_DDNS_LOCK:-/var/lock/minigate-ddns.lock}"
+# 运行状态只放内存，不写 /etc/config：避免每次检查都提交配置、备份里混入运行数据
+STATE_DIR="${MINIGATE_DDNS_STATE_DIR:-/var/run/minigate/ddns}"
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [DDNS] $*" >> "$LOGFILE"; }
 trim_log() { [ -f "$LOGFILE" ] && [ "$(wc -l < "$LOGFILE")" -gt 300 ] && { tail -n 150 "$LOGFILE" > "${LOGFILE}.tmp"; mv "${LOGFILE}.tmp" "$LOGFILE"; }; }
@@ -22,6 +24,71 @@ lock_ddns() {
     else
         flock -n 7
     fi
+}
+
+# 状态文件与 IP 历史一样按域名命名；LuCI 侧用相同规则读取
+state_key() {
+    printf '%s' "$1" | tr -c 'A-Za-z0-9_-' '_'
+}
+
+state_value() {
+    sed -n "s/^$2=//p" "$1" 2>/dev/null | head -1
+}
+
+# write_state 域名 状态 说明 IPv4 IPv6 更新时间 下次检查；IP 为空时保留上次结果
+write_state() {
+    local key file tmp ip ip6
+    key=$(state_key "$1")
+    [ -n "$key" ] || return 0
+    mkdir -p "$STATE_DIR" 2>/dev/null || return 0
+    file="${STATE_DIR}/${key}.state"
+    tmp="${file}.$$"
+    ip="$4"; ip6="$5"
+    [ -n "$ip" ] || ip=$(state_value "$file" ip)
+    [ -n "$ip6" ] || ip6=$(state_value "$file" ip6)
+    {
+        printf 'status=%s\n' "$2"
+        printf 'message=%s\n' "$3"
+        printf 'ip=%s\n' "$ip"
+        printf 'ip6=%s\n' "$ip6"
+        printf 'updated=%s\n' "$6"
+        printf 'next=%s\n' "$7"
+    } > "$tmp" && mv -f "$tmp" "$file"
+}
+
+mark_stopped() {
+    local sec domain file
+    for sec in $(uci -q -X show minigate | grep '=ddns$' | cut -d. -f2 | cut -d= -f1); do
+        domain=$(uci -q get minigate.${sec}.domain)
+        [ -n "$domain" ] || continue
+        file="${STATE_DIR}/$(state_key "$domain").state"
+        write_state "$domain" stopped "已停止" "" "" "$(state_value "$file" updated)" ""
+    done
+}
+
+# 只接受公网地址：软路由在上级路由 NAT 之后时，网卡上是内网地址，不能推到 Cloudflare
+is_public_ipv4() {
+    printf '%s\n' "$1" | awk -F. '
+        NF != 4 { exit 1 }
+        {
+            for (i = 1; i <= 4; i++) if ($i !~ /^[0-9]+$/ || $i + 0 > 255) exit 1
+            a = $1 + 0; b = $2 + 0
+            if (a == 0 || a == 10 || a == 127 || a >= 224) exit 1
+            if (a == 100 && b >= 64 && b <= 127) exit 1
+            if (a == 169 && b == 254) exit 1
+            if (a == 172 && b >= 16 && b <= 31) exit 1
+            if (a == 192 && b == 168) exit 1
+            if (a == 198 && (b == 18 || b == 19)) exit 1
+        }'
+}
+
+# 全球单播 2000::/3；排除 ULA、链路本地等
+is_public_ipv6() {
+    case "$1" in
+        *[!0-9a-fA-F:]*) return 1 ;;
+        [23][0-9a-fA-F]*:*) return 0 ;;
+    esac
+    return 1
 }
 
 history_now() {
@@ -158,49 +225,60 @@ get_ip4_iface() {
     echo "$ip" | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'
 }
 
+# 依次请求查询地址，取第一个公网 IPv4；HTTPS 优先，HTTP 仅作兜底
+IP4_FALLBACK_URLS="https://ddns.oray.com/checkip http://ip.3322.net http://members.3322.org/dyndns/getip http://ns1.dnspod.net:6666"
+
 get_ip4_url() {
-    local ip=""
-    # 备用 URL 列表（主选 + 自动回退）
-    local fallback_urls="http://ip.3322.net http://members.3322.org/dyndns/getip http://ns1.dnspod.net:6666 http://ip.tool.chinaz.com/getip"
-    local urls="$1 $fallback_urls"
-
-    for url in $urls; do
-        local host=$(echo "$url" | sed -E 's|https?://||;s|/.*||;s|:.*||')
-        local port=$(echo "$url" | grep -oE ':[0-9]+' | head -1 | tr -d ':')
-        local path=$(echo "$url" | sed -E 's|https?://[^/]*||')
-        [ -z "$path" ] && path="/"
-        [ -z "$port" ] && port="80"
-
-        # 方法1: 直连
-        ip=$(curl -4 -s --connect-timeout 3 --max-time 8 "$url" 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-        [ -n "$ip" ] && { echo "$ip"; return; }
-
-        # 方法2: DNS 解析后用 Host 头直连（绕过代理）
-        local resolved=$(nslookup "$host" 223.5.5.5 2>/dev/null | grep -A1 'Name:' | grep 'Address:' | head -1 | awk '{print $2}')
-        if [ -n "$resolved" ]; then
-            ip=$(curl -4 -s --connect-timeout 3 --max-time 8 -H "Host: ${host}" "http://${resolved}:${port}${path}" 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-            [ -n "$ip" ] && { echo "$ip"; return; }
+    local ip="" url
+    for url in $1 $IP4_FALLBACK_URLS; do
+        ip=$(fetch_ip4 "$url")
+        if [ -n "$ip" ]; then
+            echo "$ip"
+            return 0
         fi
     done
     echo ""
 }
 
+fetch_ip4() {
+    local url="$1" ip candidate host port scheme resolved
+    host=$(echo "$url" | sed -E 's|https?://||;s|/.*||;s|:.*||')
+    port=$(echo "$url" | sed -E 's|https?://[^/:]*||' | grep -oE '^:[0-9]+' | tr -d ':')
+    scheme="http"
+    echo "$url" | grep -q '^https' && scheme="https"
+    [ -z "$port" ] && { [ "$scheme" = "https" ] && port="443" || port="80"; }
+
+    # 方法1: 直连
+    for candidate in $(curl -4 -s --connect-timeout 3 --max-time 8 "$url" 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -3); do
+        is_public_ipv4 "$candidate" && { echo "$candidate"; return 0; }
+    done
+
+    # 方法2: 用公共 DNS 解析后直连（绕过透明代理的 fake-ip 解析）
+    resolved=$(nslookup "$host" 223.5.5.5 2>/dev/null | grep -A1 'Name:' | grep 'Address:' | head -1 | awk '{print $2}')
+    is_public_ipv4 "$resolved" || return 0
+    for candidate in $(curl -4 -s --connect-timeout 3 --max-time 8 --resolve "${host}:${port}:${resolved}" "$url" 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -3); do
+        is_public_ipv4 "$candidate" && { echo "$candidate"; return 0; }
+    done
+    return 0
+}
+
 # ====== IPv6 获取 ======
 get_ip6_iface() {
-    local ip="" iface="${1:-wan6}"
-    # 优先取全局 IPv6 地址（排除 link-local fe80::）
-    ip=$(ubus call network.interface.${iface} status 2>/dev/null | jsonfilter -e '@["ipv6-address"][0].address' 2>/dev/null)
-    [ -z "$ip" ] && ip=$(ifstatus "${iface}" 2>/dev/null | jsonfilter -e '@["ipv6-address"][0].address' 2>/dev/null)
-    # 也尝试从 ipv6-prefix-assignment 获取
-    [ -z "$ip" ] && ip=$(ubus call network.interface.${iface} status 2>/dev/null | jsonfilter -e '@["ipv6-prefix-assignment"][0]["local-address"].address' 2>/dev/null)
-    # 验证是有效的 IPv6（排除 link-local）
-    echo "$ip" | grep -v '^fe80' | grep -oE '^[0-9a-fA-F:]+$' | head -1
+    local status ip iface="${1:-wan6}"
+    status=$(ubus call network.interface.${iface} status 2>/dev/null)
+    [ -n "$status" ] || status=$(ifstatus "${iface}" 2>/dev/null)
+    # 取第一个全球单播地址（跳过 ULA、链路本地），没有时再看前缀分配给本机的地址
+    for ip in $(printf '%s' "$status" | jsonfilter -e '@["ipv6-address"][*].address' 2>/dev/null) \
+              $(printf '%s' "$status" | jsonfilter -e '@["ipv6-prefix-assignment"][*]["local-address"].address' 2>/dev/null); do
+        is_public_ipv6 "$ip" && { echo "$ip"; return 0; }
+    done
+    echo ""
 }
 
 get_ip6_url() {
     local url="$1" ip=""
     local host=$(echo "$url" | sed -E 's|https?://||;s|/.*||;s|:.*||')
-    local port=$(echo "$url" | grep -oE ':[0-9]+' | head -1 | tr -d ':')
+    local port=$(echo "$url" | sed -E 's|https?://[^/:]*||' | grep -oE '^:[0-9]+' | tr -d ':')
 
     # 先尝试直连
     ip=$(curl -6 -s --connect-timeout 5 --max-time 10 "$url" 2>/dev/null | grep -oE '([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}' | head -1)
@@ -215,7 +293,7 @@ get_ip6_url() {
             ip=$(curl -6 -s --connect-timeout 5 --max-time 10 --resolve "${host}:${port}:${resolved}" "$url" 2>/dev/null | grep -oE '([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}' | head -1)
         fi
     fi
-    echo "$ip"
+    is_public_ipv6 "$ip" && echo "$ip"
 }
 
 # Token 经标准输入交给 curl，不出现在进程参数中。
@@ -315,7 +393,7 @@ update_one() {
 
     [ -z "$domain" ] || [ -z "$zone_id" ] || [ -z "$token" ] && {
         log "$domain: 配置不完整"
-        uci -q set minigate.${sec}.status="error"; uci -q set minigate.${sec}.status_msg="配置不完整"
+        write_state "$domain" error "配置不完整" "" "" "$(date '+%Y-%m-%d %H:%M:%S')" ""
         return 1
     }
 
@@ -333,7 +411,12 @@ update_one() {
         local ip4=""
         case "$ip_source" in url) ip4=$(get_ip4_url "$ip_url");; *) ip4=$(get_ip4_iface "$iface");; esac
 
-        if [ -z "$ip4" ]; then
+        if [ -n "$ip4" ] && ! is_public_ipv4 "$ip4"; then
+            log "$domain: 网卡地址 $ip4 不是公网地址（可能在上级路由 NAT 之后），请改用「从外部URL获取」"
+            msgs="${msgs}IPv4 ${ip4} 不是公网地址; "
+            any_fail=1
+            ip4=""
+        elif [ -z "$ip4" ]; then
             log "$domain: 获取IPv4失败"
             msgs="${msgs}IPv4获取失败; "
             any_fail=1
@@ -406,18 +489,13 @@ update_one() {
     fi
 
     # ====== 更新状态 ======
+    local status="error"
     if [ "$any_ok" = "1" ] && [ "$any_fail" = "0" ]; then
-        uci -q set minigate.${sec}.status="ok"
+        status="ok"
     elif [ "$any_ok" = "1" ] && [ "$any_fail" = "1" ]; then
-        uci -q set minigate.${sec}.status="partial"
-    else
-        uci -q set minigate.${sec}.status="error"
+        status="partial"
     fi
-    uci -q set minigate.${sec}.status_msg="$msgs"
-    [ -n "$result_ip" ] && uci -q set minigate.${sec}.last_ip="$result_ip"
-    [ -n "$result_ip6" ] && uci -q set minigate.${sec}.last_ip6="$result_ip6"
-    uci -q set minigate.${sec}.last_update="$(date '+%Y-%m-%d %H:%M:%S')"
-    uci -q set minigate.${sec}.next_sync="$next_time"
+    write_state "$domain" "$status" "$msgs" "$result_ip" "$result_ip6" "$(date '+%Y-%m-%d %H:%M:%S')" "$next_time"
     [ "$refresh_dns" = "1" ] && refresh_local_dns_caches "$domain" || true
 }
 
@@ -448,7 +526,6 @@ main() {
     local c=0
     for sec in $due; do update_one "$sec" "$force"; c=$((c + 1)); done
     [ "$c" = "0" ] && log "无 DDNS 记录"
-    uci commit minigate
     log "--- 同步完成 ($c 条) ---"
     trim_log
 }
@@ -462,8 +539,12 @@ if [ "$1" = "single" ] && [ -n "$2" ]; then
     lock_ddns wait
     log "手动同步: $2"
     update_one "$2" "1"
-    uci commit minigate
     trim_log
+    exit 0
+fi
+
+if [ "$1" = "mark-stopped" ]; then
+    mark_stopped
     exit 0
 fi
 

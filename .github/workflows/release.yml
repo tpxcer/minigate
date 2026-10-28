@@ -2,25 +2,42 @@ name: Build and publish release
 
 on:
   push:
-    branches:
-      - main
+  pull_request:
   workflow_dispatch:
 
 permissions:
-  contents: write
-
-concurrency:
-  group: minigate-release
-  cancel-in-progress: false
+  contents: read
 
 jobs:
-  release:
-    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[release]')
+  # 每次推送和 PR 都跑测试；发布任务只在测试通过后执行
+  test:
     runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Install runtime test dependencies
+        run: sudo apt-get update && sudo apt-get install -y nginx lua5.1
+
+      - name: Run tests
+        env:
+          MINIGATE_TEST_NGINX: /usr/sbin/nginx
+          MINIGATE_TEST_LUA: /usr/bin/lua5.1
+        run: node --test tests/*.test.cjs
+
+  release:
+    needs: test
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && contains(github.event.head_commit.message, '[release]')))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: minigate-release
+      cancel-in-progress: false
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
 
@@ -73,15 +90,6 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           test -s "releases/${tag}.md"
 
-      - name: Install runtime test dependencies
-        run: sudo apt-get update && sudo apt-get install -y nginx lua5.1
-
-      - name: Run tests
-        env:
-          MINIGATE_TEST_NGINX: /usr/sbin/nginx
-          MINIGATE_TEST_LUA: /usr/bin/lua5.1
-        run: node --test tests/*.test.cjs
-
       - name: Build IPK
         shell: bash
         run: |
@@ -107,5 +115,5 @@ jobs:
             echo "Release ${TAG} already exists; publish a new date sequence instead of replacing it" >&2
             exit 1
           else
-            gh release create "$TAG" dist/* --target "$GITHUB_SHA" --title "minigate v${VERSION}" --notes-file "releases/${TAG}.md" --latest
+            gh release create "$TAG" dist/* --target "$GITHUB_SHA" --title "MiniGate v${VERSION}" --notes-file "releases/${TAG}.md" --latest
           fi

@@ -158,6 +158,7 @@ remove_firewall_state() {
     [ -z "$ROOT" ] || return 0
 
     remove_nft_rule_for_set login_banned_v4
+    remove_nft_rule_for_set login_banned_v6
     remove_nft_rule_for_set minigate_blocked
     if command -v iptables >/dev/null 2>&1; then
         while iptables -D INPUT -m set --match-set minigate_blocked src -j DROP >/dev/null 2>&1; do :; done
@@ -170,7 +171,8 @@ remove_cron() {
     cron_file="$(root_path /etc/crontabs/root)"
     if [ -f "$cron_file" ]; then
         cron_tmp="${cron_file}.minigate.$$"
-        if sed '/minigate/d' "$cron_file" > "$cron_tmp"; then
+        # 只删除本插件脚本的任务，保留用户自己写的其他任务
+        if sed '\#/usr/lib/minigate/#d' "$cron_file" > "$cron_tmp"; then
             cat "$cron_tmp" > "$cron_file"
         fi
         rm -f "$cron_tmp"
@@ -205,7 +207,9 @@ remove_program_files() {
     rm -f \
         "$(root_path /etc/init.d/minigate)" \
         "$(root_path /usr/lib/lua/luci/controller/minigate.lua)" \
-        "$(root_path /usr/lib/lua/luci/i18n/minigate.zh-cn.lmo)"
+        "$(root_path /usr/lib/lua/luci/i18n/minigate.zh-cn.lmo)" \
+        "$(root_path /usr/share/nftables.d/table-pre/20-minigate-login-guard.nft)" \
+        "$(root_path /usr/share/nftables.d/chain-pre/input/20-minigate-login-guard.nft)"
     rm -rf \
         "$(root_path /usr/lib/minigate)" \
         "$(root_path /usr/lib/lua/luci/model/cbi/minigate)" \

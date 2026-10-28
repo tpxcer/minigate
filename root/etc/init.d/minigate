@@ -1,93 +1,124 @@
 #!/bin/sh /etc/rc.common
 START=99
 STOP=10
-LOGIN_GUARD=/usr/lib/minigate/login_guard.sh
+USE_PROCD=1
 
-# === 启动登录防护 watcher（独立子进程） ===
-start_login_guard() {
-    local lg_en=$(uci -q get minigate.login_guard.enabled)
-    [ "$lg_en" = "1" ] || return 0
-    # 已在跑则跳过
-    pgrep -f "^/bin/sh ${LOGIN_GUARD} run" >/dev/null 2>&1 && return 0
-    /bin/sh "$LOGIN_GUARD" run >/dev/null 2>&1 &
-    logger -t minigate "登录防护已启动"
+PROG_DIR="${MINIGATE_LIB_DIR:-/usr/lib/minigate}"
+PROXY="$PROG_DIR/proxy.sh"
+LOGIN_GUARD="$PROG_DIR/login_guard.sh"
+NGINX_CONF="${MINIGATE_NGINX_CONF:-/etc/minigate/nginx/minigate.conf}"
+STATE_DIR="${MINIGATE_STATE_DIR:-/var/run/minigate}"
+CRON_FILE="${MINIGATE_CRON_FILE:-/etc/crontabs/root}"
+MG_RELOADING=0
+
+# 只匹配本插件脚本路径，不会删除用户自己写的、名字里恰好含 minigate 的任务
+update_cron() {
+    local enabled="$1" tmp
+    mkdir -p "$(dirname "$CRON_FILE")"
+    tmp="${CRON_FILE}.minigate.$$"
+    if [ -f "$CRON_FILE" ]; then
+        grep -v '/usr/lib/minigate/' "$CRON_FILE" > "$tmp"
+    else
+        : > "$tmp"
+    fi
+    if [ "$enabled" = "1" ]; then
+        cat >> "$tmp" <<'EOF'
+*/5 * * * * /bin/sh /usr/lib/minigate/ddns.sh
+0 3 * * * /bin/sh /usr/lib/minigate/acme.sh renew
+*/10 * * * * /bin/sh /usr/lib/minigate/proxy.sh trim-logs
+EOF
+    fi
+    if [ -f "$CRON_FILE" ] && [ "$(cat "$tmp")" = "$(cat "$CRON_FILE")" ]; then
+        rm -f "$tmp"
+        return 0
+    fi
+    cat "$tmp" > "$CRON_FILE"
+    rm -f "$tmp"
+    # crond 是常驻进程，不能继承 procd 的服务锁
+    ( close_procd_lock; /etc/init.d/cron restart ) >/dev/null 2>&1 || true
 }
 
-# 先结束子进程：logread -f / tail -f 忽略 SIGPIPE，父 shell 退出后不会自行结束
-stop_process_tree() {
-    local child
-    for child in $(pgrep -P "$1" 2>/dev/null); do
-        stop_process_tree "$child"
-    done
-    kill "$1" >/dev/null 2>&1
+# 按配置类型计算摘要：保存某一页时只重载受影响的部分
+config_digest() {
+    uci -q show minigate 2>/dev/null | awk -v types=" $1 " '
+        {
+            key = $0; sub(/=.*/, "", key)
+            n = split(key, part, ".")
+        }
+        n == 2 { value = $0; sub(/^[^=]*=/, "", value); type[part[2]] = value }
+        index(types, " " type[part[2]] " ") { print }
+    ' | md5sum | cut -d' ' -f1
 }
 
-# 只匹配实际启动形式；调用方命令行里恰好含有这段文本时（BusyBox pgrep 不排除祖先），不能结束调用方
-stop_login_guard() {
-    local pids pid
-    pids=$(pgrep -f "^/bin/sh ${LOGIN_GUARD} run" 2>/dev/null)
-    for pid in $pids; do
-        stop_process_tree "$pid"
-    done
-    sleep 1
-    pids=$(pgrep -f "^/bin/sh ${LOGIN_GUARD} run" 2>/dev/null)
-    [ -n "$pids" ] && kill -9 $pids >/dev/null 2>&1
-    # 移除 nft 中的 drop 规则（保留 set，让现有封禁继续生效到自然过期）
-    local handle=$(nft -a list chain inet fw4 input 2>/dev/null | grep "minigate-login-guard" | grep -oE 'handle [0-9]+' | awk '{print $2}')
-    [ -n "$handle" ] && nft delete rule inet fw4 input handle "$handle" 2>/dev/null
-    logger -t minigate "登录防护已停止"
+# procd 在 fd 1000 上持有服务锁；常驻或长时间运行的子进程继承它会挡住下一次服务操作。
+# 用 eval 关闭，避免只支持个位数描述符的 shell 在解析本文件时出错。
+close_procd_lock() {
+    [ -e /proc/self/fd/1000 ] && eval 'exec 1000>&-'
+    return 0
 }
 
-start() {
-    # === 登录防护可独立启用，与 minigate 主开关无关 ===
-    start_login_guard
-
-    local en=$(uci -q get minigate.global.enabled)
-    [ "$en" = "1" ] || { logger -t minigate "主功能未启用（仅登录防护可能已运行）"; return 0; }
-    logger -t minigate "启动..."
-    /bin/sh /usr/lib/minigate/proxy.sh start
-    /bin/sh /usr/lib/minigate/ddns.sh force &
-    # 设置 cron
-    sed -i '/minigate/d' /etc/crontabs/root 2>/dev/null
-    echo "*/5 * * * * /bin/sh /usr/lib/minigate/ddns.sh" >> /etc/crontabs/root
-    echo "0 3 * * * /bin/sh /usr/lib/minigate/acme.sh renew" >> /etc/crontabs/root
-    echo "*/2 * * * * /bin/sh /usr/lib/minigate/geofence.sh scan" >> /etc/crontabs/root
-    echo "*/10 * * * * /bin/sh /usr/lib/minigate/proxy.sh trim-logs" >> /etc/crontabs/root
-    /etc/init.d/cron restart 2>/dev/null
-    logger -t minigate "已启动"
+run_background() {
+    ( close_procd_lock; "$@" ) </dev/null >/dev/null 2>&1 &
 }
 
-stop() {
-    logger -t minigate "停止所有服务..."
-    # 停止反向代理
-    /bin/sh /usr/lib/minigate/proxy.sh stop
-    sleep 1
-    # 移除所有 cron 定时任务（DDNS + ACME）
-    sed -i '/minigate/d' /etc/crontabs/root 2>/dev/null
-    /etc/init.d/cron restart 2>/dev/null
-    # 清除 DDNS 运行状态
-    local sections=$(uci -q show minigate | grep '=ddns$' | cut -d. -f2 | cut -d= -f1)
-    for sec in $sections; do
-        uci -q set minigate.${sec}.status="stopped"
-        uci -q set minigate.${sec}.status_msg="已停止"
-        uci -q set minigate.${sec}.next_sync=""
-    done
-    uci commit minigate
-    # 停止登录防护
-    stop_login_guard
-    logger -t minigate "已停止（DDNS定时/ACME续期/反代/登录防护 全部关闭）"
+start_service() {
+    mkdir -p "$STATE_DIR"
+
+    # 登录防护可独立启用，与 MiniGate 主开关无关；配置摘要变化时 procd 自动重启它
+    if [ "$(uci -q get minigate.login_guard.enabled)" = "1" ]; then
+        procd_open_instance login_guard
+        procd_set_param command /bin/sh "$LOGIN_GUARD" run
+        procd_set_param env MINIGATE_LG_DIGEST="$(config_digest login_guard)"
+        procd_set_param respawn
+        procd_close_instance
+    fi
+
+    if [ "$(uci -q get minigate.global.enabled)" != "1" ]; then
+        update_cron 0
+        /bin/sh "$PROXY" stop
+        /bin/sh "$PROG_DIR/ddns.sh" mark-stopped
+        return 0
+    fi
+
+    [ "${MINIGATE_SKIP_PREPARE:-0}" = "1" ] || /bin/sh "$PROXY" prepare
+    # 生成失败时 proxy.sh 已恢复上一份配置，继续用它运行，不因一次保存错误中断全部站点
+    if [ -s "$NGINX_CONF" ]; then
+        procd_open_instance nginx
+        procd_set_param command /bin/sh "$PROXY" run
+        procd_set_param env MINIGATE_STREAM="$(grep -c '^stream {' "$NGINX_CONF")"
+        procd_set_param respawn
+        procd_close_instance
+        /bin/sh "$PROXY" lan-dns
+    fi
+
+    update_cron 1
+    config_digest "global proxy proxy_wildcard subproxy" > "$STATE_DIR/digest.proxy"
+    config_digest "ddns" > "$STATE_DIR/digest.ddns"
+    [ "$MG_RELOADING" = "1" ] || run_background /bin/sh "$PROG_DIR/ddns.sh" force
 }
 
-restart() {
-    stop
-    sleep 1
+# LuCI「保存并应用」后由 procd 调用：重新声明进程，只重载配置有变化的部分
+reload_service() {
+    local old_proxy old_ddns
+    old_proxy=$(cat "$STATE_DIR/digest.proxy" 2>/dev/null)
+    old_ddns=$(cat "$STATE_DIR/digest.ddns" 2>/dev/null)
+
+    MG_RELOADING=1
     start
+    MG_RELOADING=0
+
+    [ "$(uci -q get minigate.global.enabled)" = "1" ] || return 0
+    [ "$old_proxy" = "$(cat "$STATE_DIR/digest.proxy" 2>/dev/null)" ] || /bin/sh "$PROXY" hup
+    [ "$old_ddns" = "$(cat "$STATE_DIR/digest.ddns" 2>/dev/null)" ] || run_background /bin/sh "$PROG_DIR/ddns.sh" force
 }
 
-reload() {
-    /bin/sh /usr/lib/minigate/proxy.sh reload
-    /bin/sh /usr/lib/minigate/ddns.sh force
-    # 登录防护配置改了也需要重启 watcher
-    stop_login_guard
-    start_login_guard
+stop_service() {
+    update_cron 0
+    /bin/sh "$PROXY" stop
+    /bin/sh "$PROG_DIR/ddns.sh" mark-stopped
+    rm -f "$STATE_DIR/digest.proxy" "$STATE_DIR/digest.ddns"
+}
+
+service_triggers() {
+    procd_add_reload_trigger "minigate"
 }

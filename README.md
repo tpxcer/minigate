@@ -1,14 +1,14 @@
-# minigate - OpenWrt 轻量网关管理
+# MiniGate - OpenWrt 轻量网关管理
 
 一个类似 Lucky 的轻量级 OpenWrt 应用，提供四大核心功能：DDNS、SSL 证书、反向代理、登录防护。
 
-当前版本：**v2026.10.26**。项目名称、仓库名及 OpenWrt 内部包名均为 **`minigate`**。
+当前版本：**v2026.10.28**。界面名称为 **MiniGate**，仓库名及 OpenWrt 内部包名均为 **`minigate`**。
 
-> OpenWrt 用户请从 [Releases](https://github.com/tpxcer/minigate/releases/latest) 下载 `minigate_2026.10.26_all.ipk`。不要把 GitHub 自动生成的 `Source code (zip)` / `Source code (tar.gz)` 当安装包上传到 LuCI。
+> OpenWrt 用户请从 [Releases](https://github.com/tpxcer/minigate/releases/latest) 下载 `minigate_2026.10.28_all.ipk`。不要把 GitHub 自动生成的 `Source code (zip)` / `Source code (tar.gz)` 当安装包上传到 LuCI。
 
 ## 项目定位
 
-minigate 面向需要自托管轻量网关能力的 OpenWrt / ImmortalWrt 用户，目标是在 LuCI 中集中完成域名解析、证书签发、反向代理和登录防护配置，减少在路由器上手动维护多组脚本、Nginx 配置和防火墙规则的成本。
+MiniGate 面向需要自托管轻量网关能力的 OpenWrt / ImmortalWrt 用户，目标是在 LuCI 中集中完成域名解析、证书签发、反向代理和登录防护配置，减少在路由器上手动维护多组脚本、Nginx 配置和防火墙规则的成本。
 
 项目重点关注以下场景：
 
@@ -36,54 +36,63 @@ minigate 面向需要自托管轻量网关能力的 OpenWrt / ImmortalWrt 用户
 - 自动检测 WAN IP 变化并更新 DNS 记录
 - 公网记录变化成功后无重启刷新 sing-box 与 dnsmasq DNS 缓存，减少局域网继续命中旧地址
 - 同名同类型记录重复时，保留匹配当前 IP 的记录并清理其余旧记录，避免旧 IP 继续参与解析
-- 支持从网络接口或外部 URL 获取 IP
+- 支持从网络接口或外部 URL 获取 IP；外部查询默认用 HTTPS，失败时依次回退
+- 只向 Cloudflare 推送公网地址：软路由在上级路由 NAT 之后时，网卡上的 192.168.x 等内网地址会被拒绝并提示改用外部 URL
+- 运行状态保存在 `/var/run/minigate`，定时检查不再改写 `/etc/config/minigate`
 - 每条记录可配置检查间隔（最小 5 分钟，按 5 分钟取整）
-- 一键手动触发更新
+- 一键手动触发更新，在后台执行并原地刷新状态，不会丢掉表单里未保存的修改
 - 最近一天 IP 变化明细，显示 IPv4/IPv6 地址、开始时间、结束时间和持续时长
 
 ### 🔒 SSL/TLS 证书 (ACME)
 - **Let's Encrypt** 自动证书签发
 - 使用 **DNS-01** 挑战方式（Cloudflare）
 - 支持 ECC / RSA 多种密钥类型
-- 自动续期（通过 cron 每天检查）
+- 自动续期（通过 cron 每天检查）；剩余超过 30 天时手动签发不会重复申请，避免触发频率限制
+- 证书列表显示到期日期、剩余天数，并区分测试证书和正式证书
+- acme.sh 固定为 3.1.6 版本，下载后校验 SHA-256 再安装
+- 签发在后台执行，页面轮询结果，不受网页请求超时影响
 - Staging 模式用于测试
 
 ### 🔄 反向代理
 - 基于 **Nginx** 的轻量反向代理
 - **IPv6 监听**支持（listen [::]:port 双栈）
-- HTTP/2、WebSocket 支持
+- HTTP/2；所有站点自动支持 WebSocket，无需逐条开启
 - 自动 SSL 证书关联
 - 已启用 HTTPS 的任意监听端口可自动识别明文 HTTP，并以 308 跳转到同域名、同端口的 HTTPS
 - 安全 Headers（HSTS 等）
-- 多站点管理
+- 多站点管理；子域名可单独停用，通配符主域名停用时其子域名一并停用
+- 同一端口只能用于一种协议（HTTP 或 HTTPS），冲突的规则会被跳过，并在总览页提示原因
+- 配置检查失败时自动恢复上一份可用配置，正在运行的站点不受影响；缺少证书的站点会在总览页提示
+- Nginx 由 procd 管理，异常退出后自动拉起
 - **直接 IP 访问拒绝**：只允许域名访问，扫描器直接断开
 - **未知 Host 拒绝**：同一监听端口下，未配置的域名/前缀不会落到第一个反代站点
 - **局域网直连解析**（可选）：内网设备把代理域名直接解析到本机 LAN 地址，公网 IP 变化、上游 DNS 缓存过期或主路由不支持回流时，内网访问不受影响，流量也不进入代理
 - **公网访问范围**（可选）：选择允许访问的省级地区，IPv4/IPv6 在首次转发前检查，未命中白名单直接断开；局域网私有地址继续可用
 
 ### 🛡 登录防护 (Login Guard)
-- 监控 **SSH（dropbear）** 和 **LuCI 网页** 登录失败
+- 监控 **SSH（dropbear）** 和 **LuCI 网页** 登录失败，支持 **IPv4 和 IPv6** 来源
 - 在「失败窗口」内累积达到阈值（默认 3 次/10 分钟）→ 自动用 nftables 封禁源 IP
 - 可配置封禁时长（1 小时 / 6 小时 / **12 小时（默认）** / 24 小时 / 1 周 / 30 天）
-- **LAN 私有段自动豁免**（192.168.x / 10.x / 127.x / 172.16-31.x），可加额外白名单
+- **LAN 私有段自动豁免**（192.168.x / 10.x / 127.x / 172.16-31.x、IPv6 ULA / 链路本地，以及 LAN 分配的 IPv6 子网），可加额外白名单（IPv4/IPv6，任意前缀长度）
 - **滑动时间窗口**：超过窗口未再失败则计数自动清零
 - 持久化存储 `/etc/minigate/login-guard/bans.txt`，重启/固件升级后已生效封禁自动恢复
 - LuCI 页面实时显示封禁列表、剩余时间、归属地（结合归属地查询 API）
 - 失败计数列表默认显示 5 条，支持切换 5 / 20 / 30 条，并复用访客追踪归属地查询；显示最近访问时间并按最新时间排序
-- 支持网页**一键解封**、**手动封禁**、**清空全部**
-- 后台 watchdog 每 5 分钟自检 nft set，防 fw4 reload 后规则丢失
+- 支持网页**一键解封**、**手动封禁**、**清空全部**（清空按钮在列表底部，避免误点）
+- 封禁集合与拦截规则随包放在 `/usr/share/nftables.d`，防火墙每次重载自动加载；重载清空的封禁 30 秒内从持久化文件恢复
+- 由 procd 管理，异常退出后自动拉起；停止时结束所有子进程
 
 ### 👁 访客追踪
 - 总览页面显示来源 IP、归属地、最近请求结果、HTTP 状态及转发/拦截次数；被拒绝的扫描也保留在记录中
 - 「近5分钟有请求」仅表示近期出现请求，不代表访客在线；已转发也不代表已登录。旧日志缺少上游响应信息时，只能标记为已响应、请求失败或结果未知，不推断为准入放行
-- IP 归属地后端查询（ip9.com.cn → ip-api.com → pconline 多源回退）
+- IP 归属地优先查随包的离线省级地址库，命中时不把访客 IP 发给外部服务；境外地址再用 HTTPS 接口（ip9.com.cn → pconline）查询，缓存最多保留 500 条
 
 ### 软件更新
-- 登录 LuCI 后打开 **服务 → minigate → 总览**，自动检查 GitHub 最新正式版；不会自动下载或安装
+- 登录 LuCI 后打开 **服务 → MiniGate → 总览**，自动检查 GitHub 最新正式版；不会自动下载或安装
 - 10 分钟内复用成功检查结果；「检查更新」可随时手动重新检查
 - 点击「一键更新」先显示本次 Release 更新内容，确认后才开始安装
 - 安装前校验 SHA-256 并备份程序和配置，安装或服务验证失败时尝试回滚
-- 总览标题区提供「卸载」入口；二次确认默认保留配置、证书、封禁记录和日志，也可主动选择彻底清理
+- 总览页底部「危险操作」区提供「卸载」入口；二次确认默认保留配置、证书、封禁记录和日志，也可主动选择彻底清理
 
 ---
 
@@ -93,20 +102,20 @@ minigate 面向需要自托管轻量网关能力的 OpenWrt / ImmortalWrt 用户
 
 从 [Releases](https://github.com/tpxcer/minigate/releases/latest) 下载：
 
-`minigate_2026.10.26_all.ipk`
+`minigate_2026.10.28_all.ipk`
 
 **通过 LuCI 界面安装：**
 1. 打开 LuCI → **系统** → **软件包**
 2. 点击 **上传软件包**
-3. 选择 `minigate_2026.10.26_all.ipk`，点击安装
+3. 选择 `minigate_2026.10.28_all.ipk`，点击安装
 
 **通过命令行安装：**
 
 ```bash
 cd /tmp
-wget -O minigate_2026.10.26_all.ipk https://github.com/tpxcer/minigate/releases/download/v2026.10.26/minigate_2026.10.26_all.ipk
+wget -O minigate_2026.10.28_all.ipk https://github.com/tpxcer/minigate/releases/download/v2026.10.28/minigate_2026.10.28_all.ipk
 opkg update
-opkg install /tmp/minigate_2026.10.26_all.ipk
+opkg install /tmp/minigate_2026.10.28_all.ipk
 rm -f /tmp/luci-indexcache /tmp/luci-modulecache 2>/dev/null
 /etc/init.d/uhttpd restart
 /etc/init.d/minigate restart
@@ -125,7 +134,7 @@ Release 用的 `.ipk` 请用仓库脚本生成，避免生成 Debian 风格 ar �
 脚本会输出：
 
 ```text
-dist/minigate_2026.10.26_all.ipk
+dist/minigate_2026.10.28_all.ipk
 ```
 
 该文件外层是 OpenWrt/ImmortalWrt 24.10 兼容的 `tar.gz`，内部成员顺序为 `debian-binary`、`control.tar.gz`、`data.tar.gz`。
@@ -153,7 +162,7 @@ wget -qO- https://raw.githubusercontent.com/tpxcer/minigate/main/scripts/install
 需要指定并核对具体版本时，执行：
 
 ```bash
-d="$(mktemp -d /tmp/minigate.XXXXXX)" && cd "$d" && wget -q https://github.com/tpxcer/minigate/releases/download/v2026.10.26/minigate-v2026.10.26-src.tar.gz && wget -q https://github.com/tpxcer/minigate/releases/download/v2026.10.26/SHA256SUMS && grep 'minigate-v2026.10.26-src.tar.gz$' SHA256SUMS | sha256sum -c - && tar xzf minigate-v2026.10.26-src.tar.gz && sh install.sh && /etc/init.d/uhttpd restart && /etc/init.d/minigate restart
+d="$(mktemp -d /tmp/minigate.XXXXXX)" && cd "$d" && wget -q https://github.com/tpxcer/minigate/releases/download/v2026.10.28/minigate-v2026.10.28-src.tar.gz && wget -q https://github.com/tpxcer/minigate/releases/download/v2026.10.28/SHA256SUMS && grep 'minigate-v2026.10.28-src.tar.gz$' SHA256SUMS | sha256sum -c - && tar xzf minigate-v2026.10.28-src.tar.gz && sh install.sh && /etc/init.d/uhttpd restart && /etc/init.d/minigate restart
 ```
 
 其中 `minigate.XXXXXX` 是临时目录模板，系统会自动把六个 `X` 替换为随机字符，避免与已有目录重名。该命令会校验源码包的 SHA-256、保留现有 minigate 配置并重启 LuCI 与 minigate 服务。
@@ -168,20 +177,20 @@ ssh root@192.168.1.1
 
 # 2. 在路由器上直接下载 Release 源码包
 cd /tmp
-wget -O minigate-src.tar.gz https://github.com/tpxcer/minigate/releases/download/v2026.10.26/minigate-v2026.10.26-src.tar.gz
-wget -O minigate-SHA256SUMS https://github.com/tpxcer/minigate/releases/download/v2026.10.26/SHA256SUMS
-awk '$2 == "minigate-v2026.10.26-src.tar.gz" {print $1 "  minigate-src.tar.gz"}' minigate-SHA256SUMS | sha256sum -c - || exit 1
+wget -O minigate-src.tar.gz https://github.com/tpxcer/minigate/releases/download/v2026.10.28/minigate-v2026.10.28-src.tar.gz
+wget -O minigate-SHA256SUMS https://github.com/tpxcer/minigate/releases/download/v2026.10.28/SHA256SUMS
+awk '$2 == "minigate-v2026.10.28-src.tar.gz" {print $1 "  minigate-src.tar.gz"}' minigate-SHA256SUMS | sha256sum -c - || exit 1
 
 # 3. 解压到独立目录并安装
-mkdir -p /tmp/minigate-v2026.10.26
-tar xzf minigate-src.tar.gz -C /tmp/minigate-v2026.10.26
-cd /tmp/minigate-v2026.10.26
+mkdir -p /tmp/minigate-v2026.10.28
+tar xzf minigate-src.tar.gz -C /tmp/minigate-v2026.10.28
+cd /tmp/minigate-v2026.10.28
 sh install.sh
 
 # 4. 启动服务
 /etc/init.d/minigate restart
 
-# 5. 访问 LuCI → 服务 → minigate
+# 5. 访问 LuCI → 服务 → MiniGate
 ```
 
 ### 方法 4：OpenWrt SDK 编译（适用所有版本，含 APK）
@@ -207,7 +216,7 @@ APK 的内部版本格式要求将同日序号 `-N` 写为 `-rN`，SDK 会自动
 
 ### LuCI 一键更新
 
-进入 **服务 → minigate → 总览 → 软件更新**：
+进入 **服务 → MiniGate → 总览 → 软件更新**：
 
 1. 打开总览时自动检查，也可以点击「检查更新」立即重新检查
 2. 有新版本时点击「一键更新」，弹出该版本的更新内容
@@ -225,7 +234,7 @@ SSH 登录后执行上方「方法 2」的一条命令，保留原有配置并�
 ### IPK 升级
 
 ```bash
-opkg install --force-reinstall /tmp/minigate_2026.10.26_all.ipk
+opkg install --force-reinstall /tmp/minigate_2026.10.28_all.ipk
 rm -f /tmp/luci-indexcache /tmp/luci-modulecache 2>/dev/null
 /etc/init.d/minigate restart
 ```
@@ -244,7 +253,7 @@ rm -f /tmp/luci-indexcache /tmp/luci-modulecache 2>/dev/null
 
 ### 方式 1：LuCI 一键卸载（推荐）
 
-进入 **服务 → minigate → 总览**，点击标题右侧的「卸载」：
+进入 **服务 → MiniGate → 总览**，点击页面底部「危险操作」区的「卸载」：
 
 1. 阅读中断提示并确认卸载范围
 2. 默认不勾选数据清理，保留 `/etc/config/minigate`、证书、封禁记录和日志
@@ -287,28 +296,29 @@ opkg remove minigate 2>/dev/null || apk del minigate 2>/dev/null
 ## 使用指南
 
 ### 第一步：基础配置
-1. 进入 **LuCI → 服务 → minigate**
-2. 在「总览」页面开启 minigate
-3. 如需 IPv6 反代监听，开启「反向代理监听 IPv6」
+1. 进入 **LuCI → 服务 → MiniGate**
+2. 在「总览」页面顶部勾选「启用 MiniGate」，点击「保存并应用」
+3. 如需 IPv6 反代监听，在「反向代理 → 高级设置」开启「监听 IPv6」
 
 ### 第二步：配置 DDNS
 1. 切换到 **DDNS** 标签页
 2. 启用 DDNS，填入 Cloudflare Zone ID 和 API Token
 3. 设置域名，选择协议版本（IPv4 / IPv6 / 双栈）
-4. 保存并应用
+4. 软路由在上级路由后面时，「IP 来源」选「从外部URL获取」
+5. 保存并应用
 
 ### 第三步：签发 SSL 证书
 1. 切换到 **SSL 证书** 标签页，启用 ACME
-2. 先用 Staging 模式测试
-3. 点击「立即签发 / 续期」
-4. 成功后关闭 Staging 重新签发正式证书
+2. 先用测试模式（Staging）验证
+3. 点击「立即签发」，签发在后台进行，可以离开页面
+4. 成功后关闭测试模式并保存，再签发正式证书；证书列表会标出「测试证书」和「正式证书」
 
 ### 第四步：配置反向代理
 1. 切换到 **反向代理** 标签页
 2. 添加规则，填写域名、目标地址和端口
 3. 启用 SSL（自动关联 ACME 证书）
-4. 如需输入 `http://域名:监听端口` 后自动进入 HTTPS，开启「HTTP 自动跳转」
-5. 保存并应用；minigate 会自动跟随每条 HTTPS 规则的监听端口，无需额外指定固定跳转端口
+4. 如需输入 `http://域名:监听端口` 后自动进入 HTTPS，在页面下方「高级设置」开启「HTTP 跳转」
+5. 保存并应用；MiniGate 会自动跟随每条 HTTPS 规则的监听端口，无需额外指定固定跳转端口
 6. 如需内网访问不绕公网，开启「局域网直连解析」（见下方说明）
 
 ### 局域网直连解析
@@ -326,11 +336,11 @@ opkg remove minigate 2>/dev/null || apk del minigate 2>/dev/null
 - 关闭开关或停止 minigate 时会移除该文件；也可以手动执行 `/usr/lib/minigate/proxy.sh lan-dns` 重新同步
 
 ### 设置公网访问范围
-在 **反向代理 → 公网访问范围** 中启用「限制公网访问地区」，再添加允许的省级地区（支持多个）。例如仅保留「四川省」，保存应用后，只允许地址库判定为四川的公网 IP 访问。默认关闭，升级不会自动收紧现有访问范围。
+在 **反向代理 → 高级设置：公网访问范围** 中启用「限制公网访问地区」，再勾选允许的省级地区（支持多个）。例如仅保留「四川省」，保存应用后，只允许地址库判定为四川的公网 IP 访问。默认关闭，升级不会自动收紧现有访问范围。
 
 - 所有普通域名、子域名、HTTP 跳转及 WebSocket 均在转发前检查；其他地区、境外及归属地未知来源返回 Nginx `444`（直接断开，无响应正文）
 - IPv4、IPv6 使用同一策略；RFC1918 私有 IPv4、回环、IPv6 ULA 和链路本地地址继续放行；LAN 接口已分配的全球 IPv6 子网也自动豁免。使用「局域网直连解析」可通过 LAN IPv4 访问
-- 不修改防火墙，不限制 SSH、RustDesk 等其他服务；启用此功能时不再运行旧版地区日志扫描封禁逻辑，已有登录防护独立生效
+- 不修改防火墙，不限制 SSH、RustDesk 等其他服务；旧版的地区日志扫描封禁已移除，升级时会把旧配置迁移到这里；登录防护独立生效
 - 使用实际连接来源（同端口分流时为本机 stream 提供的 PROXY protocol），不信任访客提交的 `X-Forwarded-For` / `X-Real-IP`；若前面还有 CDN 或隐藏来源的代理，看到的是该代理的出口 IP
 - 数据来自 [ip2region](https://github.com/lionsoul2014/ip2region)，随安装包附带 34 个省级地区的离线 CIDR，不需要在线归属地接口或额外 Nginx 模块。版本、源文件 SHA-256 和网段数见 `root/usr/lib/minigate/geo/metadata.json`，原许可证随包保留
 - 地址归属可能误判或随运营商调整变化；外出、漫游或使用外省代理出口时可能被拦截。数据缺失或配置为空时仍拒绝公网，不自动退回全部放行。可从局域网关闭开关恢复访问
@@ -358,7 +368,7 @@ python3 scripts/build-geo-data.py /path/to/ip2region/data
 安装后，反向代理自动拒绝直接使用 IP 地址访问的请求（返回 444 断开连接）。同时，每个监听端口都会生成 `default_server` 兜底规则，未配置的 Host / 子域名前缀不会落到同端口第一个反代站点。只有通过正确域名访问才能到达后端服务，这可以有效防止网络扫描器探测和域名串站。
 
 ### 访客追踪
-总览页面实时显示所有通过反向代理访问的 IP 地址、归属地和在线状态，帮助你发现异常访问。
+总览页面实时显示所有通过反向代理访问的 IP 地址、归属地和最近请求结果，帮助你发现异常访问。
 
 ---
 
@@ -380,16 +390,23 @@ minigate/
 │   │   ├── acme.lua                   # ACME 证书
 │   │   ├── proxy.lua                  # 反向代理
 │   │   └── login_guard.lua            # 登录防护
-│   └── view/minigate/log.htm          # 日志页面
+│   └── view/minigate/
+│       ├── log.htm                    # 日志页面（按时间合并各来源）
+│       ├── style.htm                  # 各配置页共用的深浅色样式
+│       ├── proxy_empty.htm            # 反代页无域名时的提示
+│       └── ddns_history.htm           # 最近一天 IP 变化明细
 └── root/
     ├── etc/config/minigate            # UCI 配置（含 login_guard 段）
-    ├── etc/init.d/minigate            # 服务脚本（启停含 login_guard）
+    ├── etc/init.d/minigate            # procd 服务脚本（Nginx、登录防护、配置变更自动重载）
+    ├── usr/share/nftables.d/          # 登录防护封禁集合与规则（随 fw4 加载）
     └── usr/lib/minigate/
         ├── ddns.sh                    # DDNS（双栈）
         ├── acme.sh                    # 证书管理
         ├── proxy.sh                   # 反代（协议分流+IPv6+访问日志）
-        ├── login_guard.sh             # 登录防护 watcher + CLI
-        ├── after_commit.sh            # LuCI 保存后等配置提交再应用
+        ├── login_guard.sh             # 登录防护 watcher + CLI（IPv4/IPv6）
+        ├── job.sh                     # 签发证书、手动同步等后台任务
+        ├── geo_lookup.sh              # 离线省级归属地查询
+        ├── uninstall.sh               # 卸载
         └── update.sh                  # GitHub Release 安全更新器
 ```
 
@@ -407,6 +424,20 @@ minigate/
 - `nftables` - 登录防护用（OpenWrt 22.03+ / ImmortalWrt 默认已装）
 
 ## 更新日志
+
+### v2026.10.28
+- 修复：通配符主域名停用或删除后，其子域名会退回成 443 端口的明文 HTTP 站点，并可能让 Nginx 因两个默认站点无法加载；现在子域名随主域名一起停用，并可单独停用
+- 修复：同一端口同时有 HTTP 和 HTTPS 规则时生成无法加载的配置；冲突规则会被跳过并在总览提示
+- 配置检查失败时恢复上一份可用配置；生成过程加锁，避免保存、续期和更新同时触发时互相覆盖
+- 服务改由 procd 管理：Nginx 与登录防护异常退出后自动拉起，LuCI「保存并应用」后只重载受影响的部分，不再轮询等待配置写入
+- 登录防护支持 IPv6 来源、任意前缀长度的白名单；封禁规则随防火墙重载自动加载，重载后的封禁 30 秒内恢复；封禁失败不再误记为已封禁
+- DDNS 只推送公网地址，外部查询默认用 HTTPS；运行状态移出 `/etc/config/minigate`，定时检查不再改写配置
+- 证书：固定 acme.sh 3.1.6 并校验 SHA-256；剩余超过 30 天不重复签发；签发和手动同步改为后台任务，不受网页超时影响
+- 所有站点自动支持 WebSocket；归属地优先查离线地址库，境外地址才用 HTTPS 接口
+- 移除旧版地区日志扫描（升级时迁移到请求前准入）；定时任务只管理本插件脚本，不再误删用户任务
+- 界面：名称统一为 MiniGate；总开关移到总览顶部，未启用时有提示；DDNS 卡片列出全部记录并按最差状态着色；证书卡片显示到期日期、剩余天数和测试证书；反代地址可直接点击，并显示配置问题；卸载移到底部「危险操作」区
+- 界面：日志「全部」按时间合并各来源，新增登录防护、软件更新来源，向上翻看时不再被拉回底部；DDNS 手动同步不再刷新整页；反代页规则在前、高级设置在后，地区改为复选框，启用开关统一为勾选框；配置页跟随深色主题；表单增加域名、Zone ID、检查间隔、阈值和白名单校验
+- CI 对每次推送和 PR 运行测试，发布任务只在测试通过后执行
 
 ### v2026.10.26
 - 访问记录区分「已拦截、已转发、已响应、请求失败、结果未知」，显示最近请求的 HTTP 状态与拦截/转发/其他次数

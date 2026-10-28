@@ -196,7 +196,8 @@ test('LuCI exposes only a confirmed POST uninstall action and runs a temporary s
 test('the package contains the uninstaller and supports both OpenWrt package managers', () => {
     const makefile = fs.readFileSync(path.join(root, 'Makefile'), 'utf8');
     const source = fs.readFileSync(script, 'utf8');
-    assert.match(makefile, /root\/usr\/lib\/minigate\/uninstall\.sh/);
+    assert.match(makefile, /\$\(INSTALL_BIN\) \.\/root\/usr\/lib\/minigate\/\*\.sh /);
+    assert.ok(fs.existsSync(path.join(root, 'root/usr/lib/minigate/uninstall.sh')));
     assert.match(source, /opkg remove "\$package"/);
     assert.match(source, /apk del "\$package"/);
     assert.match(source, /for package in minigate luci-app-minigate/);

@@ -131,6 +131,95 @@ test('overview renders legacy visitor responses as unknown and escapes log conte
     assert.doesNotMatch(html, /<img|已转发|在线|离线|拦截 undefined/);
 });
 
+const statusData = extra => ({
+    enabled: '1', ddns_list: [], proxy_rules: [], certs: [], acme: {}, proxy_warnings: [], ...extra
+});
+
+test('overview shows a notice only while MiniGate is disabled', () => {
+    const page = fakePage(overviewScript);
+    take(page, 'su').callback(null, statusData({ enabled: '0' }));
+    assert.equal(page.element('mg-disabled').hidden, false);
+    page.context.mgLoadStatus();
+    take(page, 'su').callback(null, statusData({ enabled: '1' }));
+    assert.equal(page.element('mg-disabled').hidden, true);
+});
+
+test('overview DDNS card lists every record and takes the worst status', () => {
+    const page = fakePage(overviewScript);
+    take(page, 'su').callback(null, statusData({
+        ddns_status: 'error',
+        ddns_list: [
+            { domain: 'a.example.com', enabled: '1', status: 'ok', last_ip: '198.51.100.1', last_update: '2026-10-28 10:00:00' },
+            { domain: 'b.example.com', enabled: '1', status: 'error', status_msg: 'IPv4 192.168.2.2 不是公网地址<b>' }
+        ]
+    }));
+    assert.match(page.element('mg-d1').innerHTML, /异常/);
+    const body = page.element('mg-d2').innerHTML;
+    assert.match(body, /a\.example\.com[\s\S]*A 198\.51\.100\.1/);
+    assert.match(body, /b\.example\.com/);
+    assert.match(body, /不是公网地址&lt;b&gt;/);
+    assert.doesNotMatch(body, /<b>/);
+});
+
+test('overview certificate card shows expiry dates, days left and test certificates', () => {
+    const page = fakePage(overviewScript);
+    take(page, 'su').callback(null, statusData({
+        acme: { enabled: '1', result: 'error', message: '签发失败 (exit=1)' },
+        certs: [
+            { domain: '*.example.com', expires_date: '2026-11-02', days_left: 5, staging: false },
+            { domain: 'test.example.com', expires_date: '2027-01-20', days_left: 84, staging: true }
+        ]
+    }));
+    assert.match(page.element('mg-a1').innerHTML, /即将到期/);
+    const body = page.element('mg-a2').innerHTML;
+    assert.match(body, /到期 2026-11-02（剩 5 天）/);
+    assert.match(body, /测试证书，浏览器不信任/);
+    assert.match(body, /最近一次签发：签发失败/);
+
+    const staging = fakePage(overviewScript);
+    take(staging, 'su').callback(null, statusData({ certs: [{ domain: 'x.example.com', expires_date: '2027-01-20', days_left: 84, staging: true }] }));
+    assert.match(staging.element('mg-a1').innerHTML, /测试证书/);
+});
+
+test('overview proxy card links sites safely and surfaces configuration problems', () => {
+    const page = fakePage(overviewScript);
+    take(page, 'su').callback(null, statusData({
+        proxy_running: true,
+        proxy_check: 'error',
+        proxy_message: '配置检查失败，已保留上一份配置：[emerg] x',
+        proxy_warnings: ['跳过 nas.example.com：通配符主域名 *.example.com 未启用或不存在'],
+        proxy_rules: [{ scheme: 'https', domain: 'box.example.com', listen_port: '2000', target: '192.168.2.2:8080' },
+            { scheme: 'https', domain: '"><img>', listen_port: '443', target: 'x' }]
+    }));
+    assert.match(page.element('mg-p1').innerHTML, /最近一次配置未生效/);
+    const body = page.element('mg-p2').innerHTML;
+    assert.match(body, /<a class="mg-link" href="https:\/\/box\.example\.com:2000" target="_blank" rel="noopener noreferrer">/);
+    assert.match(body, /已保留上一份配置/);
+    assert.match(body, /跳过 nas\.example\.com/);
+    assert.doesNotMatch(body, /"><img>/);
+});
+
+function ddnsPageScript() {
+    const source = fs.readFileSync(path.join(root, 'luasrc/model/cbi/minigate/ddns.lua'), 'utf8');
+    const start = source.indexOf('<script type="text/javascript">');
+    const end = source.indexOf('</script>', start);
+    return source.slice(start + '<script type="text/javascript">'.length, end).replace(/\]\]\.\.(\w+)\.\.\[\[/g, '$1');
+}
+
+test('manual DDNS sync runs in the background and updates the row without reloading the page', () => {
+    const page = fakePage(ddnsPageScript());
+    let reloaded = false;
+    page.context.location.reload = () => { reloaded = true; };
+    const button = page.element('sync-button');
+    page.context.doSync('cfg01', button);
+    take(page, 'url').callback(null, { success: true });
+    take(page, 'job').callback(null, { running: false, done: true, success: true, status: 'ok', ip: '198.51.100.20', updated: '2026-10-28 10:00:00' });
+    assert.equal(reloaded, false);
+    assert.equal(button.disabled, false);
+    assert.match(page.element('sr-cfg01').innerHTML, /同步完成 198\.51\.100\.20/);
+    assert.match(page.element('ss-cfg01').innerHTML, /A: 198\.51\.100\.20/);
+});
+
 test('login guard renders empty JSON objects as empty lists and uses POST for changes', () => {
     const page = fakePage(loginGuardScript);
     take(page, 'lu').callback(null, { enabled: '1', running: true, banned: {}, banned_total: 0, watching: {}, watching_total: 0, threshold: 3 });
@@ -151,7 +240,11 @@ test('state-changing LuCI endpoints require POST with the CSRF token', () => {
     }
     const ddns = fs.readFileSync(path.join(root, 'luasrc/model/cbi/minigate/ddns.lua'), 'utf8');
     const acme = fs.readFileSync(path.join(root, 'luasrc/model/cbi/minigate/acme.lua'), 'utf8');
-    assert.match(ddns, /XHR\.post\("\]\]\.\.url\.\.\[\[",\{section:s\}/);
-    assert.doesNotMatch(acme, /XHR\.get\(/);
+    assert.match(ddns, /mgRequest\('post',"\]\]\.\.url\.\.\[\[",\{section:s\}/);
+    // 安装与签发用 POST 启动后台任务，只有读取任务状态用 GET
+    assert.match(acme, /acmePost\('\]\]\.\.iu\.\.\[\['/);
+    assert.match(acme, /acmePost\('\]\]\.\.su\.\.\[\['/);
+    assert.match(acme, /acmeGet\('\]\]\.\.ju\.\.\[\['/);
+    assert.match(controller, /"acme_job"\}, call\("action_acme_job"\)\)/);
     assert.match(controller, /sec:match\("\^\[%w_\]\+\$"\)/);
 });

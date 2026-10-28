@@ -127,9 +127,10 @@ test('no generated sites means no hosts file', () => {
 test('reload syncs LAN hosts only after nginx accepted the new configuration', () => {
     const box = sandbox();
     const body = ok => `
-        PID_FILE=${JSON.stringify(path.join(box.dir, 'missing.pid'))}
-        prepare_config() { return 0; }
-        start_prepared() { return ${ok ? 0 : 1}; }
+        uci() { echo 1; }
+        lock_proxy() { :; }
+        prepare_config() { return ${ok ? 0 : 1}; }
+        apply_config() { return 0; }
         sync_lan_hosts() { echo synced; }
         do_reload
     `;

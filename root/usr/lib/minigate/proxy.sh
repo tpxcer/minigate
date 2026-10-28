@@ -15,8 +15,39 @@ ACCESS_LOG_MAX="${MINIGATE_ACCESS_LOG_MAX:-1048576}"
 LAN_HOSTS_FILE="${MINIGATE_LAN_HOSTS_FILE:-/tmp/hosts/minigate}"
 GEO_DIR="${MINIGATE_GEO_DIR:-/usr/lib/minigate/geo}"
 MIME_TYPES="${MINIGATE_MIME_TYPES:-/etc/nginx/mime.types}"
+LOCK_FILE="${MINIGATE_PROXY_LOCK:-/var/lock/minigate-proxy.lock}"
+STATUS_FILE="${MINIGATE_PROXY_STATUS:-/var/run/minigate/proxy.status}"
+INIT_SCRIPT="${MINIGATE_INIT:-/etc/init.d/minigate}"
+# 每次生成使用独立临时目录记录端口、默认站点和通配符设置，结束后删除
+GEN_TMP=""
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [PROXY] $*" >> "$LOGFILE"; }
+
+# 生成配置时的提示同时写日志，并在总览页显示
+warn() {
+    log "$*"
+    [ -n "$GEN_TMP" ] && printf '%s\n' "$*" >> "$GEN_TMP/warnings"
+}
+
+# LuCI 保存、证书续期和更新可能同时触发生成；串行化，避免互相删除刚生成的文件。
+lock_proxy() {
+    command -v flock >/dev/null 2>&1 || return 0
+    mkdir -p "$(dirname "$LOCK_FILE")" 2>/dev/null
+    exec 6>"$LOCK_FILE" || return 0
+    flock -x 6
+}
+
+write_status() {
+    local result="$1" message="$2" tmp
+    mkdir -p "$(dirname "$STATUS_FILE")" 2>/dev/null || return 0
+    tmp="${STATUS_FILE}.$$"
+    {
+        printf 'result=%s\n' "$result"
+        printf 'time=%s\n' "$(date '+%Y-%m-%d %H:%M:%S')"
+        printf 'message=%s\n' "$message"
+        [ -n "$GEN_TMP" ] && [ -f "$GEN_TMP/warnings" ] && sed 's/^/warning=/' "$GEN_TMP/warnings"
+    } > "$tmp" && mv -f "$tmp" "$STATUS_FILE"
+}
 
 generate_main_conf() {
     local http_redirect=$(get_http_redirect)
@@ -27,7 +58,7 @@ generate_main_conf() {
         use_stream=1
     fi
     if [ "$use_stream" = "1" ] && [ ! -f "$STREAM_MODULE" ]; then
-        log "同端口HTTP跳转需要 nginx-mod-stream"
+        warn "同端口HTTP跳转需要 nginx-mod-stream，请先安装"
         return 1
     fi
 
@@ -61,6 +92,11 @@ EOF
     map $proxy_protocol_addr $minigate_client_addr {
         default $proxy_protocol_addr;
         "" $remote_addr;
+    }
+    # 所有站点都支持 WebSocket；普通请求仍按 nginx 默认关闭上游连接
+    map $http_upgrade $minigate_connection_upgrade {
+        default upgrade;
+        "" close;
     }
     log_format minigate_json escape=json
         '{"time":"$time_iso8601",'
@@ -97,9 +133,19 @@ find_cert() {
     return 1
 }
 
+# nginx 1.25 起用独立的 http2 指令；同时兼容以后的主版本号
 check_h2() {
-    local m=$(nginx -v 2>&1 | grep -oE '[0-9]+\.[0-9]+' | head -1 | cut -d. -f2)
-    [ "${m:-0}" -ge 25 ] && echo "new" || echo "old"
+    local v major minor
+    v=$(nginx -v 2>&1 | grep -oE '[0-9]+\.[0-9]+' | head -1)
+    major=${v%%.*}
+    minor=${v#*.}
+    case "$major" in ''|*[!0-9]*) major=0 ;; esac
+    case "$minor" in ''|*[!0-9]*) minor=0 ;; esac
+    if [ "$major" -gt 1 ] || { [ "$major" = "1" ] && [ "$minor" -ge 25 ]; }; then
+        echo "new"
+    else
+        echo "old"
+    fi
 }
 
 # 读取全局 IPv6 监听设置
@@ -229,7 +275,7 @@ SEOF
 ensure_default_server() {
     local lport="$1" ssl="$2" h2s="$3" ipv6_listen="$4" mux="$5"
     local key=$(echo "${lport}_${ssl}_${mux}" | tr -c 'A-Za-z0-9_' '_')
-    local mark="/tmp/minigate_default_${key}.tmp"
+    local mark="${GEN_TMP}/default_${key}"
     [ -f "$mark" ] && return 0
     : > "$mark"
     write_default_server "${SITES_DIR}/000_default_${key}.conf" "$lport" "$ssl" "$h2s" "$ipv6_listen" "$mux"
@@ -254,7 +300,7 @@ SEOF
 
 ensure_stream_server() {
     local lport="$1" ipv6_listen="$2"
-    local mark="/tmp/minigate_stream_${lport}.tmp"
+    local mark="${GEN_TMP}/stream_${lport}"
     local conf="${STREAMS_DIR}/stream_${lport}.conf"
     [ -f "$mark" ] && return 0
     : > "$mark"
@@ -320,11 +366,15 @@ SEOF
     write_geo_guard "$conf"
     if [ "$ssl" = "1" ]; then
         local cp=$(find_cert "$domain")
-        [ -n "$cp" ] && cat >> "$conf" <<SEOF
+        if [ -n "$cp" ]; then
+            cat >> "$conf" <<SEOF
     ssl_certificate ${cp}/fullchain.pem;
     ssl_certificate_key ${cp}/key.pem;
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
 SEOF
+        else
+            warn "${domain} 没有可用证书，HTTPS 访问会失败；请先在「SSL 证书」页签发"
+        fi
     fi
 
     # 判断目标地址是否为 IPv6
@@ -345,22 +395,77 @@ SEOF
         proxy_http_version 1.1;
         proxy_read_timeout 300s;
         proxy_buffering off;
-SEOF
-    [ "$ws" = "1" ] && cat >> "$conf" <<SEOF
         proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
+        proxy_set_header Connection \$minigate_connection_upgrade;
+    }
+}
 SEOF
-    echo "    }" >> "$conf"; echo "}" >> "$conf"
+}
+
+# 同一端口只能用于一种协议：明文 HTTP、HTTPS，或 HTTPS + HTTP 跳转（stream 分流）。
+# 先占用的规则生效，冲突的规则跳过并提示，避免生成 nginx 无法加载的配置。
+claim_port() {
+    local lport="$1" mode="$2" domain="$3" file used
+    file="${GEN_TMP}/port_${lport}"
+    if [ -f "$file" ]; then
+        used=$(cat "$file")
+        [ "$used" = "$mode" ] && return 0
+        warn "跳过 ${domain}：端口 ${lport} 已用于$(port_mode_label "$used")，不能同时用于$(port_mode_label "$mode")"
+        return 1
+    fi
+    echo "$mode" > "$file"
+}
+
+port_mode_label() {
+    case "$1" in
+        http) echo "HTTP" ;;
+        https) echo "HTTPS" ;;
+        *) echo "HTTPS（含 HTTP 跳转）" ;;
+    esac
+}
+
+# 生成一条站点规则；返回非 0 表示因端口冲突被跳过
+add_site() {
+    local domain="$1" lport="$2" taddr="$3" tport="$4" ssl="$5" h2s="$6" ipv6_listen="$7" http_redirect="$8"
+    local mux=0 mode=http conf
+    if [ "$ssl" = "1" ]; then
+        mode=https
+        if [ "$http_redirect" = "1" ]; then
+            mux=1
+            mode=mux
+        fi
+    fi
+    claim_port "$lport" "$mode" "$domain" || return 1
+    if [ "$mux" = "1" ]; then
+        ensure_stream_server "$lport" "$ipv6_listen"
+        ensure_default_server "$lport" "0" "$h2s" "$ipv6_listen" "1"
+    fi
+    ensure_default_server "$lport" "$ssl" "$h2s" "$ipv6_listen" "$mux"
+    SITE_INDEX=$((SITE_INDEX + 1))
+    conf="${SITES_DIR}/site_${SITE_INDEX}.conf"
+    : > "$conf"
+    write_server "$conf" "$domain" "$lport" "$taddr" "$tport" "$ssl" "1" "1" "$h2s" "$ipv6_listen" "$mux"
+    [ "$mux" = "1" ] && write_redirect_server "$conf" "$domain" "$lport"
+    return 0
+}
+
+wildcard_key() {
+    printf '%s' "$1" | tr -c 'A-Za-z0-9.-' '_'
 }
 
 generate_sites() {
+    local own_tmp=0
+    if [ -z "$GEN_TMP" ]; then
+        GEN_TMP=$(mktemp -d "${TMPDIR:-/tmp}/minigate-gen.XXXXXX") || return 1
+        own_tmp=1
+    fi
     mkdir -p "$SITES_DIR" "$STREAMS_DIR" "$SOCKET_DIR"
     rm -f "$SITES_DIR"/*.conf
     rm -f "$STREAMS_DIR"/*.conf
     local h2s=$(check_h2)
-    local idx=0
     local ipv6_listen=$(get_ipv6_listen)
     local http_redirect=$(get_http_redirect)
+    SITE_INDEX=0
 
     # === 通配符域名设置 (proxy_wildcard sections) ===
     local wc_sections=$(uci -q show minigate | grep '=proxy_wildcard$' | cut -d. -f2 | cut -d= -f1)
@@ -372,7 +477,7 @@ generate_sites() {
         local lport=$(uci -q get minigate.${sec}.listen_port); lport=${lport:-443}
         local ssl=$(uci -q get minigate.${sec}.ssl); ssl=${ssl:-0}
         local base=$(echo "$domain" | sed 's/^\*\.//')
-        echo "${lport}|${ssl}" > "/tmp/minigate_proxy_${base}.tmp"
+        echo "${lport}|${ssl}" > "${GEN_TMP}/wildcard_$(wildcard_key "$base")"
         log "通配符: $domain (端口:$lport https:$ssl ipv6:$ipv6_listen)"
     done
 
@@ -386,58 +491,38 @@ generate_sites() {
         local taddr=$(uci -q get minigate.${sec}.target_addr)
         local tport=$(uci -q get minigate.${sec}.target_port); tport=${tport:-80}
         local ssl=$(uci -q get minigate.${sec}.ssl); ssl=${ssl:-1}
-        local h2=$(uci -q get minigate.${sec}.http2); h2=${h2:-1}
-        local ws=$(uci -q get minigate.${sec}.websocket); ws=${ws:-0}
         [ -z "$domain" ] || [ -z "$taddr" ] && continue
-        local mux=0
-        if [ "$http_redirect" = "1" ] && [ "$ssl" = "1" ]; then
-            mux=1
-            ensure_stream_server "$lport" "$ipv6_listen"
-            ensure_default_server "$lport" "0" "$h2s" "$ipv6_listen" "1"
-        fi
-        ensure_default_server "$lport" "$ssl" "$h2s" "$ipv6_listen" "$mux"
-        idx=$((idx + 1))
-        local conf="${SITES_DIR}/site_${idx}.conf"; > "$conf"
-        write_server "$conf" "$domain" "$lport" "$taddr" "$tport" "$ssl" "$h2" "$ws" "$h2s" "$ipv6_listen" "$mux"
-        [ "$mux" = "1" ] && write_redirect_server "$conf" "$domain" "$lport"
+        add_site "$domain" "$lport" "$taddr" "$tport" "$ssl" "$h2s" "$ipv6_listen" "$http_redirect"
     done
 
-    # === 子域名规则：继承通配符主域名设置 ===
+    # === 子域名规则：继承通配符主域名设置；主域名未启用时整组不生效 ===
     local subs=$(uci -q show minigate | grep '=subproxy$' | cut -d. -f2 | cut -d= -f1)
     for sec in $subs; do
+        local enabled=$(uci -q get minigate.${sec}.enabled)
+        [ "${enabled:-1}" = "1" ] || continue
         local parent=$(uci -q get minigate.${sec}.parent_domain)
         local prefix=$(uci -q get minigate.${sec}.prefix)
         local taddr=$(uci -q get minigate.${sec}.target_addr)
         local tport=$(uci -q get minigate.${sec}.target_port); tport=${tport:-80}
-        local ws=$(uci -q get minigate.${sec}.websocket); ws=${ws:-0}
         [ -z "$parent" ] || [ -z "$prefix" ] || [ -z "$taddr" ] && continue
 
         local domain="${prefix}.${parent}"
-
-        local parent_conf="/tmp/minigate_proxy_${parent}.tmp"
-        local lport="443" ssl="0"
-        if [ -f "$parent_conf" ]; then
-            local settings=$(cat "$parent_conf")
-            lport=$(echo "$settings" | cut -d'|' -f1)
-            ssl=$(echo "$settings" | cut -d'|' -f2)
+        local parent_conf="${GEN_TMP}/wildcard_$(wildcard_key "$parent")"
+        if [ ! -f "$parent_conf" ]; then
+            warn "跳过 ${domain}：通配符主域名 *.${parent} 未启用或不存在"
+            continue
         fi
-
-        idx=$((idx + 1))
-        local mux=0
-        if [ "$http_redirect" = "1" ] && [ "$ssl" = "1" ]; then
-            mux=1
-            ensure_stream_server "$lport" "$ipv6_listen"
-            ensure_default_server "$lport" "0" "$h2s" "$ipv6_listen" "1"
-        fi
-        ensure_default_server "$lport" "$ssl" "$h2s" "$ipv6_listen" "$mux"
-        local conf="${SITES_DIR}/site_${idx}.conf"; > "$conf"
-        write_server "$conf" "$domain" "$lport" "$taddr" "$tport" "$ssl" "1" "$ws" "$h2s" "$ipv6_listen" "$mux"
-        [ "$mux" = "1" ] && write_redirect_server "$conf" "$domain" "$lport"
+        local settings=$(cat "$parent_conf")
+        local lport=${settings%%|*}
+        local ssl=${settings#*|}
+        add_site "$domain" "$lport" "$taddr" "$tport" "$ssl" "$h2s" "$ipv6_listen" "$http_redirect"
     done
 
-    rm -f /tmp/minigate_proxy_*.tmp
-    rm -f /tmp/minigate_default_*.tmp
-    rm -f /tmp/minigate_stream_*.tmp
+    if [ "$own_tmp" = "1" ]; then
+        rm -rf "$GEN_TMP"
+        GEN_TMP=""
+    fi
+    return 0
 }
 
 # === 局域网直连解析 ===
@@ -523,60 +608,107 @@ ${ip} ${domain}"
     log "局域网直连解析 -> ${ip}: $(echo $domains)"
 }
 
-do_stop() {
-    if [ -f "$PID_FILE" ]; then
-        local pid=$(cat "$PID_FILE" 2>/dev/null)
-        if [ -n "$pid" ]; then
-            kill "$pid" 2>/dev/null
-            local i=0
-            while [ $i -lt 10 ] && kill -0 "$pid" 2>/dev/null; do
-                sleep 1; i=$((i + 1))
-            done
-            kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null
-        fi
-        rm -f "$PID_FILE"
-        rm -f "$SOCKET_DIR"/*.sock
-        log "已停止"
+# 保存当前配置，生成或检查失败时恢复，磁盘上始终保留最后一份可用配置
+snapshot_config() {
+    local dir="$1"
+    mkdir -p "$dir/sites" "$dir/streams" || return 1
+    cp -p "$SITES_DIR"/*.conf "$dir/sites/" 2>/dev/null
+    cp -p "$STREAMS_DIR"/*.conf "$dir/streams/" 2>/dev/null
+    [ -f "$NGINX_CONF" ] && cp -p "$NGINX_CONF" "$dir/main.conf"
+    return 0
+}
+
+restore_config() {
+    local dir="$1"
+    rm -f "$SITES_DIR"/*.conf "$STREAMS_DIR"/*.conf
+    cp -p "$dir/sites/"*.conf "$SITES_DIR/" 2>/dev/null
+    cp -p "$dir/streams/"*.conf "$STREAMS_DIR/" 2>/dev/null
+    if [ -f "$dir/main.conf" ]; then
+        cp -p "$dir/main.conf" "$NGINX_CONF"
+    else
+        rm -f "$NGINX_CONF"
     fi
 }
 
+# 生成并检查配置；失败时恢复上一份配置，不影响正在运行的 nginx
 prepare_config() {
-    generate_sites || return 1
-    generate_main_conf || return 1
-    nginx -t -c "$NGINX_CONF" >> "$LOGFILE" 2>&1 || { log "配置错误"; return 1; }
+    local backup output rc=0 message=""
+    GEN_TMP=$(mktemp -d "${TMPDIR:-/tmp}/minigate-gen.XXXXXX") || { log "无法创建临时目录"; return 1; }
+    backup="${GEN_TMP}/backup"
+    output="${GEN_TMP}/nginx-test.log"
+    snapshot_config "$backup"
+
+    if ! generate_sites || ! generate_main_conf; then
+        rc=1
+        message="生成配置失败，已保留上一份配置"
+    elif ! nginx -t -c "$NGINX_CONF" > "$output" 2>&1; then
+        rc=1
+        cat "$output" >> "$LOGFILE"
+        message="配置检查失败，已保留上一份配置：$(grep -m1 -E 'emerg|error' "$output" | sed 's/^nginx: //')"
+        log "配置错误，已恢复上一份配置"
+    fi
+
+    if [ "$rc" = "0" ]; then
+        write_status ok "配置检查通过"
+    else
+        restore_config "$backup"
+        write_status error "$message"
+    fi
+    rm -rf "$GEN_TMP"
+    GEN_TMP=""
+    return "$rc"
 }
 
-start_prepared() {
-    do_stop 2>/dev/null
-    sleep 1
+nginx_pid() {
+    local pid
+    pid=$(cat "$PID_FILE" 2>/dev/null)
+    case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+    kill -0 "$pid" 2>/dev/null || return 1
+    echo "$pid"
+}
+
+# 由 procd 启动（前台运行，崩溃后自动拉起）。启动前清掉上次异常退出留下的 socket。
+do_run() {
     mkdir -p "$SOCKET_DIR"
     rm -f "$SOCKET_DIR"/*.sock
-    nginx -c "$NGINX_CONF" >> "$LOGFILE" 2>&1 && log "已启动" || { log "启动失败"; return 1; }
+    exec nginx -c "$NGINX_CONF" -g 'daemon off;'
 }
 
-do_start() {
-    [ -z "$(which nginx 2>/dev/null)" ] && { log "nginx未安装"; return 1; }
-    prepare_config || return 1
-    start_prepared || return 1
-    sync_lan_hosts
+# 让运行中的 nginx 加载新配置。stream 模块增减需要重启进程，交给 procd 处理。
+apply_config() {
+    local pid old_stream="$1" new_stream=0
+    grep -q '^stream {' "$NGINX_CONF" 2>/dev/null && new_stream=1
+    pid=$(nginx_pid)
+    if [ -n "$pid" ] && [ "$old_stream" = "$new_stream" ]; then
+        kill -HUP "$pid" || return 1
+        log "已重载"
+    else
+        MINIGATE_SKIP_PREPARE=1 "$INIT_SCRIPT" start 6>&- >/dev/null 2>&1 || return 1
+        log "已交由 procd 启动"
+    fi
 }
 
 do_reload() {
-    local old_mux=0 new_mux=0
-    grep -q '^stream {' "$NGINX_CONF" 2>/dev/null && old_mux=1
+    local old_stream=0
+    [ "$(uci -q get minigate.global.enabled)" = "1" ] || return 0
+    lock_proxy
+    grep -q '^stream {' "$NGINX_CONF" 2>/dev/null && old_stream=1
     prepare_config || return 1
-    grep -q '^stream {' "$NGINX_CONF" 2>/dev/null && new_mux=1
-    if [ -f "$PID_FILE" ] && kill -0 $(cat "$PID_FILE" 2>/dev/null) 2>/dev/null; then
-        if [ "$old_mux" != "$new_mux" ]; then
-            start_prepared || return 1
-        else
-            kill -HUP $(cat "$PID_FILE") || return 1
-            log "已重载"
-        fi
-    else
-        start_prepared || return 1
-    fi
+    apply_config "$old_stream" || return 1
     sync_lan_hosts
+}
+
+# 仅向已加载新配置的 nginx 发送重载信号（init 已完成生成和检查）
+do_hup() {
+    local pid
+    pid=$(nginx_pid) || return 0
+    kill -HUP "$pid" && log "已重载"
+}
+
+do_stop() {
+    remove_lan_hosts
+    rm -f "$SOCKET_DIR"/*.sock 2>/dev/null
+    write_status stopped "反向代理已停止"
 }
 
 # /var/log 在内存中且 nginx 不会自行轮转。访问日志保留最近记录到 .1 后原地清空：
@@ -599,11 +731,12 @@ if [ "${MINIGATE_PROXY_LIBRARY_ONLY:-0}" = "1" ]; then
 fi
 
 case "$1" in
-    start) do_start ;;
-    stop) do_stop; remove_lan_hosts ;;
+    prepare|test) lock_proxy; prepare_config ;;
+    run) do_run ;;
     reload) do_reload ;;
-    test) prepare_config ;;
+    hup) do_hup ;;
+    stop) do_stop ;;
     trim-logs) trim_logs ;;
     lan-dns) sync_lan_hosts ;;
-    *) echo "用法: $0 {start|stop|reload|test|trim-logs|lan-dns}" ;;
+    *) echo "用法: $0 {prepare|run|reload|hup|stop|trim-logs|lan-dns}" ;;
 esac

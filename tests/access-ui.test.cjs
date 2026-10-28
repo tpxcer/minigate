@@ -10,11 +10,12 @@ test('LuCI access settings offer all provinces, default off, validate multiple c
     const result = spawnSync(lua, ['-'], { encoding: 'utf8', input: `
         local options = {}
         package.preload['luci.sys'] = function() return {} end
+        package.preload['luci.controller.minigate'] = function() return {ddns_state=function() return {} end} end
         package.preload['luci.model.uci'] = function()
             return {cursor=function() return {foreach=function() end, get=function() end} end}
         end
-        Flag, Value, DynamicList, ListValue, DummyValue = 'Flag', 'Value', 'DynamicList', 'ListValue', 'DummyValue'
-        NamedSection, TypedSection = 'NamedSection', 'TypedSection'
+        Flag, Value, DynamicList, ListValue, DummyValue, MultiValue = 'Flag', 'Value', 'DynamicList', 'ListValue', 'DummyValue', 'MultiValue'
+        NamedSection, TypedSection, SimpleSection = 'NamedSection', 'TypedSection', 'SimpleSection'
         function Map()
             return {section=function()
                 return {option=function(self, kind, name)
@@ -34,7 +35,7 @@ test('LuCI access settings offer all provinces, default off, validate multiple c
         assert(dofile(${JSON.stringify(path.join(root, 'luasrc/model/cbi/minigate/proxy.lua'))}))
         assert(options.access_enabled.default == '0')
         local regions = options.access_regions
-        assert(regions.kind == 'DynamicList')
+        assert(regions.kind == 'MultiValue' and regions.widget == 'checkbox')
         assert(regions.default == '510000')
         assert(regions.dependency[1] == 'access_enabled' and regions.dependency[2] == '1')
         assert(regions.choices['510000'] == '四川省')
@@ -42,6 +43,8 @@ test('LuCI access settings offer all provinces, default off, validate multiple c
         assert(count == 34)
         assert(regions:validate({'510000', '500000'}, 'global'))
         assert(regions:validate('510000', 'global'))
+        assert(regions:validate('510000 500000', 'global'))
+        assert(not regions:validate('510000 ../x', 'global'))
         assert(not regions:validate({}, 'global'))
         assert(not regions:validate({''}, 'global'))
         assert(not regions:validate({'990000'}, 'global'))

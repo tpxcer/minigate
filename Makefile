@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=minigate
-PKG_VERSION:=2026.10.26
+PKG_VERSION:=2026.10.28
 PKG_RELEASE:=
 PKG_LICENSE:=MIT
 PKG_MAINTAINER:=MiniGate
@@ -43,15 +43,14 @@ define Package/$(PKG_NAME)/install
 
 	# Backend scripts
 	$(INSTALL_DIR) $(1)/usr/lib/minigate
-	$(INSTALL_BIN) ./root/usr/lib/minigate/ddns.sh $(1)/usr/lib/minigate/
-	$(INSTALL_BIN) ./root/usr/lib/minigate/acme.sh $(1)/usr/lib/minigate/
-	$(INSTALL_BIN) ./root/usr/lib/minigate/proxy.sh $(1)/usr/lib/minigate/
-	$(INSTALL_BIN) ./root/usr/lib/minigate/geofence.sh $(1)/usr/lib/minigate/
-	$(INSTALL_BIN) ./root/usr/lib/minigate/login_guard.sh $(1)/usr/lib/minigate/
-	$(INSTALL_BIN) ./root/usr/lib/minigate/update.sh $(1)/usr/lib/minigate/
-	$(INSTALL_BIN) ./root/usr/lib/minigate/uninstall.sh $(1)/usr/lib/minigate/
-	$(INSTALL_BIN) ./root/usr/lib/minigate/after_commit.sh $(1)/usr/lib/minigate/
+	$(INSTALL_BIN) ./root/usr/lib/minigate/*.sh $(1)/usr/lib/minigate/
 	$(CP) ./root/usr/lib/minigate/geo $(1)/usr/lib/minigate/
+
+	# Login guard nftables sets and rules, loaded by fw4 on every reload
+	$(INSTALL_DIR) $(1)/usr/share/nftables.d/table-pre
+	$(INSTALL_DIR) $(1)/usr/share/nftables.d/chain-pre/input
+	$(INSTALL_DATA) ./root/usr/share/nftables.d/table-pre/20-minigate-login-guard.nft $(1)/usr/share/nftables.d/table-pre/
+	$(INSTALL_DATA) ./root/usr/share/nftables.d/chain-pre/input/20-minigate-login-guard.nft $(1)/usr/share/nftables.d/chain-pre/input/
 
 	# Config
 	$(INSTALL_DIR) $(1)/etc/config

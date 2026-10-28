@@ -31,11 +31,12 @@ function readRows(file) {
     return fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean);
 }
 
-function runUpdateScenario({ cfResult, cachedIp = '', refreshResult = 0 }) {
+function runUpdateScenario({ cfResult, cachedIp = '', refreshResult = 0, currentIp = '198.51.100.20' }) {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'minigate-ddns-update-'));
     const cacheFile = path.join(tempDir, 'minigate_ddns_cfg01.cache');
     const refreshLog = path.join(tempDir, 'refresh.log');
     const uciLog = path.join(tempDir, 'uci.log');
+    const stateDir = path.join(tempDir, 'state');
     if (cachedIp) fs.writeFileSync(cacheFile, `${cachedIp}\n`);
 
     const command = `
@@ -44,6 +45,7 @@ function runUpdateScenario({ cfResult, cachedIp = '', refreshResult = 0 }) {
         export MINIGATE_CACHE_DIR=${JSON.stringify(tempDir)}
         export MINIGATE_HISTORY_DIR=${JSON.stringify(path.join(tempDir, 'history'))}
         export MINIGATE_DDNS_LOG=${JSON.stringify(path.join(tempDir, 'ddns.log'))}
+        export MINIGATE_DDNS_STATE_DIR=${JSON.stringify(stateDir)}
         . ${JSON.stringify(ddnsScript)}
         uci() {
             [ "\${1:-}" = "-q" ] && shift
@@ -57,11 +59,11 @@ function runUpdateScenario({ cfResult, cachedIp = '', refreshResult = 0 }) {
                 get:minigate.cfg01.ip_url) printf 'http://ip.example/\\n' ;;
                 get:minigate.cfg01.check_interval) printf '300\\n' ;;
                 get:minigate.cfg01.ip_version) printf 'ipv4\\n' ;;
-                set:*) printf '%s\\n' "\$2" >> ${JSON.stringify(uciLog)} ;;
+                set:*|commit:*) printf '%s\\n' "\$*" >> ${JSON.stringify(uciLog)} ;;
             esac
             return 0
         }
-        get_ip4_url() { printf '198.51.100.20\\n'; }
+        get_ip4_url() { printf '%s\\n' ${JSON.stringify(currentIp)}; }
         record_ip_history() { return 0; }
         calc_next() { printf '12:00:00\\n'; }
         cf_update() {
@@ -78,7 +80,15 @@ function runUpdateScenario({ cfResult, cachedIp = '', refreshResult = 0 }) {
     const refreshes = fs.existsSync(refreshLog) ? readRows(refreshLog) : [];
     const uciWrites = fs.existsSync(uciLog) ? readRows(uciLog) : [];
     const cache = fs.existsSync(cacheFile) ? fs.readFileSync(cacheFile, 'utf8').trim() : '';
-    return { result, refreshes, uciWrites, cache };
+    const stateFile = path.join(stateDir, '__example_com.state');
+    const state = {};
+    if (fs.existsSync(stateFile)) {
+        for (const line of readRows(stateFile)) {
+            const at = line.indexOf('=');
+            state[line.slice(0, at)] = line.slice(at + 1);
+        }
+    }
+    return { result, refreshes, uciWrites, cache, state };
 }
 
 function runCloudflareScenario(mode) {
@@ -251,14 +261,14 @@ function runScheduled({ force = false, checked }) {
 
 test('scheduled DDNS checks honour each record interval and skip disabled records', () => {
     const due = runScheduled({ checked: { cfg01: 1000000 - 280, cfg02: 1000000 - 600 } });
-    assert.deepEqual(due.calls, ['cfg01 0', 'commit']);
+    assert.deepEqual(due.calls, ['cfg01 0'], 'scheduled runs never commit /etc/config');
 
     const idle = runScheduled({ checked: { cfg01: 1000000 - 100, cfg02: 1000000 - 600 } });
     assert.deepEqual(idle.calls, [], 'nothing due: no update and no config commit');
     assert.equal(idle.logged, false, 'nothing due: no log noise every five minutes');
 
     const forced = runScheduled({ force: true, checked: { cfg01: 1000000 - 10, cfg02: 1000000 - 10 } });
-    assert.deepEqual(forced.calls, ['cfg01 1', 'cfg02 1', 'commit']);
+    assert.deepEqual(forced.calls, ['cfg01 1', 'cfg02 1']);
 });
 
 test('DDNS interval is at least five minutes and the next run matches the cron grid', () => {
@@ -280,7 +290,9 @@ test('successful Cloudflare changes refresh local DNS caches once', () => {
     assert.equal(scenario.result.status, 0, scenario.result.stderr || scenario.result.stdout);
     assert.deepEqual(scenario.refreshes, ['*.example.com']);
     assert.equal(scenario.cache, '198.51.100.20');
-    assert.ok(scenario.uciWrites.includes('minigate.cfg01.status=ok'));
+    assert.equal(scenario.state.status, 'ok');
+    assert.equal(scenario.state.ip, '198.51.100.20');
+    assert.deepEqual(scenario.uciWrites, [], 'runtime state must not be written to /etc/config');
 });
 
 test('unchanged forced sync does not flush caches, but a stale local IP does', () => {
@@ -299,14 +311,40 @@ test('Cloudflare failure never flushes local caches', () => {
     assert.equal(scenario.result.status, 0, scenario.result.stderr || scenario.result.stdout);
     assert.deepEqual(scenario.refreshes, []);
     assert.equal(scenario.cache, '198.51.100.19');
-    assert.ok(scenario.uciWrites.includes('minigate.cfg01.status=error'));
+    assert.equal(scenario.state.status, 'error');
+    assert.deepEqual(scenario.uciWrites, []);
 });
 
 test('cache refresh failure does not turn a successful DDNS update into an error', () => {
     const scenario = runUpdateScenario({ cfResult: 'changed', refreshResult: 1 });
     assert.equal(scenario.result.status, 0, scenario.result.stderr || scenario.result.stdout);
     assert.deepEqual(scenario.refreshes, ['*.example.com']);
-    assert.ok(scenario.uciWrites.includes('minigate.cfg01.status=ok'));
+    assert.equal(scenario.state.status, 'ok');
+});
+
+test('a private interface address is never pushed to Cloudflare', () => {
+    for (const ip of ['192.168.2.2', '10.0.0.5', '100.64.1.1', '172.20.0.1']) {
+        const scenario = runUpdateScenario({ cfResult: 'changed', currentIp: ip });
+        assert.equal(scenario.result.status, 0, scenario.result.stderr || scenario.result.stdout);
+        assert.equal(scenario.state.status, 'error', ip);
+        assert.match(scenario.state.message, /不是公网地址/);
+        assert.equal(scenario.cache, '', 'cf_update must not run for ' + ip);
+        assert.deepEqual(scenario.refreshes, []);
+    }
+});
+
+test('public address checks reject private, carrier NAT, ULA and link-local ranges', () => {
+    const { output } = runHistory(`
+        for ip in 1.2.3.4 182.147.210.9 10.1.1.1 172.16.0.1 172.32.0.1 192.168.1.1 100.64.0.1 100.128.0.1 127.0.0.1 169.254.1.1 0.1.2.3 224.0.0.1 256.1.1.1 1.2.3; do
+            is_public_ipv4 "$ip" && printf '%s ' "$ip"
+        done
+        printf '| '
+        for ip in 2001:db8::1 240e:1::5 fd00::1 fe80::1 ::1 'x:y'; do
+            is_public_ipv6 "$ip" && printf '%s ' "$ip"
+        done
+        true
+    `);
+    assert.equal(output, '1.2.3.4 182.147.210.9 172.32.0.1 100.128.0.1 | 2001:db8::1 240e:1::5');
 });
 
 test('local cache refresh uses sing-box API and dnsmasq SIGHUP without service restart', () => {

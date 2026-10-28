@@ -1,0 +1,10 @@
+# MiniGate 登录防护：封禁集合随防火墙每次重载重建，封禁记录由 login_guard.sh 恢复
+set login_banned_v4 {
+	type ipv4_addr
+	flags timeout
+}
+
+set login_banned_v6 {
+	type ipv6_addr
+	flags timeout
+}

@@ -5,7 +5,7 @@ ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 OUT_DIR="${1:-$ROOT_DIR/dist}"
 
 PKG_NAME="minigate"
-PKG_VERSION="2026.10.26"
+PKG_VERSION="2026.10.28"
 PKG_ARCH="all"
 PKG_FILE="${PKG_NAME}_${PKG_VERSION}_${PKG_ARCH}.ipk"
 DEPS="libc, luci-base, luci-compat, nginx-ssl, nginx-mod-stream, openssl-util, wget, curl, jsonfilter, coreutils-stat, nftables"
@@ -29,7 +29,9 @@ mkdir -p \
 	"$DATA_DIR/etc/minigate/certs" \
 	"$DATA_DIR/etc/minigate/nginx/sites" \
 	"$DATA_DIR/etc/minigate/nginx/streams" \
-	"$DATA_DIR/etc/minigate/login-guard"
+	"$DATA_DIR/etc/minigate/login-guard" \
+	"$DATA_DIR/usr/share/nftables.d/table-pre" \
+	"$DATA_DIR/usr/share/nftables.d/chain-pre/input"
 
 install -m 0644 "$ROOT_DIR/luasrc/controller/minigate.lua" "$DATA_DIR/usr/lib/lua/luci/controller/minigate.lua"
 install -m 0644 "$ROOT_DIR"/luasrc/model/cbi/minigate/*.lua "$DATA_DIR/usr/lib/lua/luci/model/cbi/minigate/"
@@ -38,6 +40,8 @@ install -m 0755 "$ROOT_DIR"/root/usr/lib/minigate/*.sh "$DATA_DIR/usr/lib/miniga
 cp -R "$ROOT_DIR/root/usr/lib/minigate/geo" "$DATA_DIR/usr/lib/minigate/"
 install -m 0644 "$ROOT_DIR/root/etc/config/minigate" "$DATA_DIR/etc/config/minigate"
 install -m 0755 "$ROOT_DIR/root/etc/init.d/minigate" "$DATA_DIR/etc/init.d/minigate"
+install -m 0644 "$ROOT_DIR/root/usr/share/nftables.d/table-pre/20-minigate-login-guard.nft" "$DATA_DIR/usr/share/nftables.d/table-pre/"
+install -m 0644 "$ROOT_DIR/root/usr/share/nftables.d/chain-pre/input/20-minigate-login-guard.nft" "$DATA_DIR/usr/share/nftables.d/chain-pre/input/"
 
 if [ -f "$ROOT_DIR/po/zh-cn/minigate.po" ] && command -v po2lmo >/dev/null 2>&1; then
 	mkdir -p "$DATA_DIR/usr/lib/lua/luci/i18n"
