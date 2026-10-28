@@ -219,12 +219,24 @@ if regions_file then
     regions_file:close()
 end
 
+-- 34 个地区按大区分组，收起时只显示已选地区，展开后可搜索（模板 minigate/region_select）
+local REGION_GROUPS = {"华北", "东北", "华东", "华中", "华南", "西南", "西北", "港澳台"}
+local function region_group(code)
+    local prefix = tonumber(code:sub(1, 2)) or 99
+    if prefix < 20 then return 1 elseif prefix < 30 then return 2 elseif prefix < 40 then return 3
+    elseif prefix < 44 then return 4 elseif prefix < 50 then return 5 elseif prefix < 60 then return 6
+    elseif prefix < 70 then return 7 end
+    return 8
+end
+
 o = s:option(MultiValue, "access_regions", "允许的省级地区", "勾选允许访问的地区，可多选。关闭地区限制即恢复所有地区访问。")
 o.widget = "checkbox"
-o.size = 6
+o.template = "minigate/region_select"
 o.default = "510000"
 o.rmempty = false
 o:depends("access_enabled", "1")
+o.groups = {}
+for i, name in ipairs(REGION_GROUPS) do o.groups[i] = {name, {}} end
 -- 旧版本以 list 保存；统一转成以空格分隔的字符串供复选框回显
 o.cfgvalue = function(self, section)
     local value = m.uci:get("minigate", section, "access_regions")
@@ -235,6 +247,8 @@ local valid_regions = {}
 for _, region in ipairs(access_regions) do
     o:value(region[1], region[2])
     valid_regions[region[1]] = true
+    local group = o.groups[region_group(region[1])][2]
+    group[#group + 1] = region[1]
 end
 o.validate = function(self, value, section)
     local values = {}
@@ -247,7 +261,13 @@ o.validate = function(self, value, section)
     for _, code in ipairs(values) do
         if not valid_regions[code] then return nil, "请从列表中选择有效的省级地区" end
     end
-    return value
+    return table.concat(values, " ")
+end
+-- 关闭地区限制时这个字段被隐藏、不会提交；LuCI 不在服务端判断依赖，
+-- 不跳过会把「未提交」当成未选择而报错，导致整页无法保存。
+o.parse = function(self, section, novld)
+    if self.map:formvalue("cbid.minigate." .. section .. ".access_enabled") ~= "1" then return end
+    return MultiValue.parse(self, section, novld)
 end
 
 return m

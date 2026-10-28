@@ -1,0 +1,94 @@
+<%+cbi/valueheader%>
+<%
+	local selected = {}
+	for code in tostring(self:cfgvalue(section) or self.default or ""):gmatch("%S+") do selected[code] = true end
+	local names = {}
+	for i, key in ipairs(self.keylist) do names[key] = self.vallist[i] end
+%>
+<div class="mgx-region" id="<%=cbid%>.region">
+	<div class="mgx-region-field" role="button" tabindex="0" aria-expanded="false" aria-controls="<%=cbid%>.panel">
+		<span class="mgx-region-chips"></span>
+		<span class="mgx-region-count mgx-muted"></span>
+		<span class="mgx-region-arrow mgx-muted" aria-hidden="true">&#9662;</span>
+	</div>
+	<div class="mgx-region-panel" id="<%=cbid%>.panel" hidden="hidden">
+		<div class="mgx-region-tools">
+			<input type="text" class="cbi-input-text mgx-region-search" placeholder="搜索地区，如 川、重庆、西南" aria-label="搜索地区" />
+			<button type="button" class="cbi-button mgx-region-clear">清空</button>
+		</div>
+		<% for _, group in ipairs(self.groups) do if #group[2] > 0 then %>
+		<div class="mgx-region-group" data-group="<%=pcdata(group[1])%>">
+			<div class="mgx-region-gname"><%=pcdata(group[1])%></div>
+			<div class="mgx-region-items">
+				<% for _, code in ipairs(group[2]) do %>
+				<label data-name="<%=pcdata(names[code])%>"><input type="checkbox" class="cbi-input-checkbox" name="<%=cbid%>" value="<%=code%>"<% if selected[code] then %> checked="checked"<% end %> /> <%=pcdata(names[code])%></label>
+				<% end %>
+			</div>
+		</div>
+		<% end end %>
+		<div class="mgx-region-empty mgx-muted" hidden="hidden">没有匹配的地区</div>
+	</div>
+</div>
+<script type="text/javascript">
+(function(){
+	var root=document.getElementById('<%=cbid%>.region');
+	if(!root)return;
+	var field=root.querySelector('.mgx-region-field'),panel=root.querySelector('.mgx-region-panel');
+	var chips=root.querySelector('.mgx-region-chips'),count=root.querySelector('.mgx-region-count');
+	var boxes=root.querySelectorAll('input[type=checkbox]');
+	function render(){
+		chips.textContent='';
+		var n=0;
+		for(var i=0;i<boxes.length;i++){
+			if(!boxes[i].checked)continue;
+			n++;
+			var chip=document.createElement('span'),remove=document.createElement('button');
+			chip.className='mgx-region-chip';
+			chip.appendChild(document.createTextNode(boxes[i].parentNode.getAttribute('data-name')));
+			remove.type='button';
+			remove.className='mgx-region-remove';
+			remove.setAttribute('aria-label','移除'+boxes[i].parentNode.getAttribute('data-name'));
+			remove.textContent='×';
+			remove.onclick=(function(box){return function(e){e.stopPropagation();box.checked=false;render();};})(boxes[i]);
+			chip.appendChild(remove);
+			chips.appendChild(chip);
+		}
+		if(!n){
+			var hint=document.createElement('span');
+			hint.className='mgx-err';
+			hint.textContent='请至少选择一个地区';
+			chips.appendChild(hint);
+		}
+		count.textContent='已选 '+n+' 个';
+	}
+	function toggle(open){
+		if(open===undefined)open=panel.hidden;
+		panel.hidden=!open;
+		field.setAttribute('aria-expanded',open?'true':'false');
+		if(open)root.querySelector('.mgx-region-search').focus();
+	}
+	field.onclick=function(){toggle();};
+	field.onkeydown=function(e){if(e.key==='Enter'||e.key===' '){e.preventDefault();toggle();}};
+	for(var i=0;i<boxes.length;i++)boxes[i].onchange=render;
+	root.querySelector('.mgx-region-clear').onclick=function(){for(var i=0;i<boxes.length;i++)boxes[i].checked=false;render();};
+	// 按地区名或大区名筛选；回车不提交整页表单
+	var search=root.querySelector('.mgx-region-search');
+	search.onkeydown=function(e){if(e.key==='Enter')e.preventDefault();};
+	search.oninput=function(){
+		var q=search.value.replace(/\s+/g,''),groups=root.querySelectorAll('.mgx-region-group'),shown=0;
+		for(var g=0;g<groups.length;g++){
+			var labels=groups[g].querySelectorAll('label'),any=false,inGroup=!q||groups[g].getAttribute('data-group').indexOf(q)>=0;
+			for(var l=0;l<labels.length;l++){
+				var hit=inGroup||labels[l].getAttribute('data-name').indexOf(q)>=0;
+				labels[l].hidden=!hit;
+				if(hit)any=true;
+			}
+			groups[g].hidden=!any;
+			if(any)shown++;
+		}
+		root.querySelector('.mgx-region-empty').hidden=shown>0;
+	};
+	render();
+})();
+</script>
+<%+cbi/valuefooter%>

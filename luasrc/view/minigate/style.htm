@@ -21,6 +21,25 @@
 .mgx-actions{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:10px}
 .mgx-sync{margin-top:4px;font-size:12px!important;padding:2px 10px!important}
 .mgx-sync-result{margin-left:8px;font-size:12px}
+.mgx-region{max-width:720px}
+.mgx-region [hidden]{display:none!important}
+.mgx-region-field{display:flex;flex-wrap:wrap;align-items:center;gap:6px;min-height:34px;padding:5px 8px;border:1px solid var(--mgx-border);border-radius:6px;background:var(--mgx-control);color:var(--mgx-text);cursor:pointer;box-sizing:border-box}
+.mgx-region-field:focus{outline:2px solid var(--mgx-info);outline-offset:1px}
+.mgx-region-chips{display:contents}
+.mgx-region-chip{display:inline-flex;align-items:center;gap:2px;padding:1px 4px 1px 8px;border-radius:4px;background:rgba(25,113,194,.14);color:var(--mgx-info);font-size:12px;line-height:20px}
+.mgx-region-remove{min-width:0!important;height:20px!important;margin:0!important;padding:0 4px!important;border:0!important;background:transparent!important;color:inherit!important;font-size:14px!important;line-height:20px!important;cursor:pointer;box-shadow:none!important}
+.mgx-region-count{margin-left:auto;font-size:12px;white-space:nowrap}
+.mgx-region-arrow{font-size:12px}
+.mgx-region-panel{margin-top:6px;padding:8px 12px;border:1px solid var(--mgx-border);border-radius:6px;background:var(--mgx-surface)}
+.mgx-region-tools{display:flex;gap:8px;align-items:center;margin-bottom:4px}
+.mgx-region-search{flex:1;min-width:0}
+.mgx-region-group{display:grid;grid-template-columns:4em minmax(0,1fr);gap:4px 10px;padding:6px 0;border-top:1px solid var(--mgx-border)}
+.mgx-region-gname{padding-top:2px;color:var(--mgx-muted);font-size:12px}
+.mgx-region-items{display:grid;grid-template-columns:repeat(auto-fill,minmax(9.5em,1fr));gap:4px 12px}
+.mgx-region-items label{display:flex;align-items:center;gap:6px;margin:0;color:var(--mgx-text);font-size:13px;white-space:nowrap;cursor:pointer}
+.mgx-region-items input{margin:0}
+.mgx-region-empty{padding:8px 0;font-size:12px}
+@media(max-width:640px){.mgx-region-group{grid-template-columns:minmax(0,1fr)}.mgx-region-items{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @keyframes mgx-spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
 .mgx-spin{display:inline-block;margin-right:8px;animation:mgx-spin 1s linear infinite}
 </style>
