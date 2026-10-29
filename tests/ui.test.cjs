@@ -248,3 +248,26 @@ test('state-changing LuCI endpoints require POST with the CSRF token', () => {
     assert.match(controller, /"acme_job"\}, call\("action_acme_job"\)\)/);
     assert.match(controller, /sec:match\("\^\[%w_\]\+\$"\)/);
 });
+
+test('login guard lists show whether each address failed over SSH, LuCI or was banned by hand', () => {
+    const page = fakePage(loginGuardScript);
+    take(page, 'lu').callback(null, {
+        enabled: '1', running: true, threshold: 3,
+        banned: [
+            { ip: '103.160.205.37', remaining: 3600, kind: 'ssh' },
+            { ip: '198.51.100.9', remaining: 600, kind: 'manual' },
+            { ip: '5.231.242.181', remaining: 60, kind: '' }
+        ],
+        banned_total: 3,
+        watching: [{ ip: '198.51.100.20', kind: 'luci', count: 1, age: 5, last_seen: '2026-10-29 12:00:00' }],
+        watching_total: 1
+    });
+    const banned = page.element('lg-banned-list').innerHTML;
+    assert.match(banned, /<th>IP 地址<\/th><th>访问类型<\/th><th>归属地<\/th>/);
+    assert.match(banned, /103\.160\.205\.37<\/code><\/td><td><span class="lg-kind lg-kind-ssh">SSH<\/span>/);
+    assert.match(banned, /lg-kind-manual">手动</);
+    assert.match(banned, /5\.231\.242\.181<\/code><\/td><td><span class="lg-kind lg-kind-none">未记录</);
+    const watching = page.element('lg-watching-list').innerHTML;
+    assert.match(watching, /<th>访问类型<\/th>/);
+    assert.match(watching, /198\.51\.100\.20<\/code><\/td><td><span class="lg-kind lg-kind-luci">LuCI</);
+});

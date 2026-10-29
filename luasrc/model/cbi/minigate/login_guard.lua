@@ -27,6 +27,12 @@ o.cfgvalue = function()
         return v
     end
 
+    local function kind_html(kind)
+        local labels = {ssh = {"SSH", "ssh"}, luci = {"LuCI", "luci"}, manual = {"手动", "manual"}}
+        local k = labels[kind or ""] or {"未记录", "none"}
+        return '<span class="lg-kind lg-kind-' .. k[2] .. '">' .. k[1] .. '</span>'
+    end
+
     local function fmt_duration(s)
         s = tonumber(s) or 0
         if s >= 3600 then
@@ -49,12 +55,13 @@ o.cfgvalue = function()
         if fh then
             local line = fh:read("*l") or ""
             fh:close()
-            local first, count = line:match("^(%d+)%s+(%d+)")
+            local first, count, kind = line:match("^(%d+)%s+(%d+)%s*(%a*)")
             if first and count then
                 local stat = fs.stat(path)
                 local last_time = (stat and stat.mtime) or tonumber(first)
                 watching_items[#watching_items + 1] = {
                     ip = ip,
+                    kind = kind,
                     count = tonumber(count) or 0,
                     age = now - tonumber(first),
                     last_time = last_time,
@@ -71,6 +78,7 @@ o.cfgvalue = function()
         local style = (i > 5) and ' style="display:none"' or ''
         watching_rows[#watching_rows + 1] =
             '<tr class="lg-watch-row" data-ip="' .. esc(item.ip) .. '" data-index="' .. tostring(i) .. '"' .. style .. '><td><code class="lg-ip">' .. esc(item.ip) .. '</code></td>' ..
+            '<td>' .. kind_html(item.kind) .. '</td>' ..
             '<td id="lg-watch-geo-initial-' .. tostring(i) .. '"><span style="color:var(--lg-muted)">查询中...</span></td>' ..
             '<td><span style="font-weight:bold">' .. esc(item.count) .. ' / ' .. esc(threshold) .. '</span></td>' ..
             '<td>' .. esc(item.last_seen) .. '</td>' ..
@@ -80,7 +88,7 @@ o.cfgvalue = function()
     local initial_watching = '<div class="lg-empty">无</div>'
     if #watching_rows > 0 then
         initial_watching =
-            '<table class="lg-table lg-table-watch"><thead><tr><th>IP 地址</th><th>归属地</th><th>失败次数</th><th>最近访问时间</th><th>距首次失败</th></tr></thead><tbody>' ..
+            '<table class="lg-table lg-table-watch"><thead><tr><th>IP 地址</th><th>访问类型</th><th>归属地</th><th>失败次数</th><th>最近访问时间</th><th>距首次失败</th></tr></thead><tbody>' ..
             table.concat(watching_rows, "") ..
             '</tbody></table>'
     end
@@ -115,6 +123,9 @@ o.cfgvalue = function()
 .lg-ip{display:inline-block;border-radius:6px;background:var(--lg-code-bg);color:var(--lg-text);padding:2px 7px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px}
 .lg-ip-danger{background:var(--lg-danger-bg);color:var(--lg-danger-text)}
 .lg-empty{padding:18px 16px;color:var(--lg-text-muted);font-size:12px}
+.lg-kind{display:inline-block;min-width:44px;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;text-align:center;white-space:nowrap;background:var(--lg-code-bg);color:var(--lg-text-muted)}
+.lg-kind-ssh{background:rgba(240,140,0,.16);color:var(--lg-warning)}
+.lg-kind-luci{background:rgba(91,85,200,.16);color:var(--lg-primary)}
 .lg-unban{height:26px;border:1px solid var(--lg-border);border-radius:6px;background:var(--lg-control);color:var(--lg-text);padding:0 10px;font-size:11px;cursor:pointer}
 :root[data-darkmode="true"] .lg-wrap{--lg-success:#78c98d;--lg-warning:#d7a64a;--lg-danger:#e58a84;--lg-muted:#9aa7b3;--lg-primary:#8e8add;--lg-surface:var(--background-color-medium,#171e26);--lg-surface-muted:var(--background-color-high,#131a22);--lg-surface-alt:var(--background-color-low,#19212a);--lg-surface-hover:#202a34;--lg-control:var(--background-color-high,#111820);--lg-text:var(--text-color-high,#d5dbe3);--lg-text-muted:var(--text-color-medium,#9aa7b3);--lg-border:var(--border-color-medium,rgba(148,163,184,.18));--lg-border-soft:var(--border-color-low,rgba(148,163,184,.12));--lg-code-bg:var(--background-color-low,#253142);--lg-danger-bg:#42303a;--lg-danger-text:#efb2b0;--lg-shadow:none}
 @media(prefers-color-scheme:dark){
@@ -130,11 +141,12 @@ o.cfgvalue = function()
 .lg-table td:nth-child(n+3){grid-column:1/-1}
 .lg-table td:before{flex:0 0 auto;color:var(--lg-text-muted)}
 .lg-table-ban td:nth-child(2),.lg-table-watch td:nth-child(2){justify-content:flex-end}
-.lg-table-ban td:nth-child(3):before{content:"剩余时间"}
-.lg-table-ban td:nth-child(4){justify-content:flex-end}
-.lg-table-watch td:nth-child(3):before{content:"失败次数"}
-.lg-table-watch td:nth-child(4):before{content:"最近访问"}
-.lg-table-watch td:nth-child(5):before{content:"距首次失败"}
+.lg-table-ban td:nth-child(3):before,.lg-table-watch td:nth-child(3):before{content:"归属地"}
+.lg-table-ban td:nth-child(4):before{content:"剩余时间"}
+.lg-table-ban td:nth-child(5){justify-content:flex-end}
+.lg-table-watch td:nth-child(4):before{content:"失败次数"}
+.lg-table-watch td:nth-child(5):before{content:"最近访问"}
+.lg-table-watch td:nth-child(6):before{content:"距首次失败"}
 .lg-tools .lg-btn{flex:1}
 }
 </style>
@@ -221,6 +233,13 @@ function lgList(value){
 
 function lgGeoHtml(loc){
     return loc?'<span style="font-size:11px">'+lgEscHtml(loc)+'</span>':'<span style="color:'+lgColor('muted')+'">查询中...</span>';
+}
+
+// 访问类型：ssh / luci / manual；旧版封禁记录没有类型
+function lgKindHtml(kind){
+    var map={ssh:['SSH','ssh'],luci:['LuCI','luci'],manual:['手动','manual']};
+    var k=map[kind]||['未记录','none'];
+    return '<span class="lg-kind lg-kind-'+k[1]+'">'+k[0]+'</span>';
 }
 
 function lgEscHtml(s){
@@ -324,7 +343,7 @@ function lgRenderWatching(watching,threshold){
         return;
     }
     var h2='<table class="lg-table lg-table-watch">';
-    h2+='<thead><tr><th>IP 地址</th><th>归属地</th><th>失败次数</th><th>最近访问时间</th><th>距首次失败</th></tr></thead><tbody>';
+    h2+='<thead><tr><th>IP 地址</th><th>访问类型</th><th>归属地</th><th>失败次数</th><th>最近访问时间</th><th>距首次失败</th></tr></thead><tbody>';
     for(var j=0;j<watching.length;j++){
         var w=watching[j]||{};
         var ip=w.ip||'--';
@@ -335,6 +354,7 @@ function lgRenderWatching(watching,threshold){
         var color=pct>=66?lgColor('danger'):(pct>=33?lgColor('warning'):lgColor('muted'));
         h2+='<tr>';
         h2+='<td><code class="lg-ip">'+lgEscHtml(ip)+'</code></td>';
+        h2+='<td>'+lgKindHtml(w.kind)+'</td>';
         h2+='<td id="lg-watch-geo-'+j+'">'+lgGeoHtml(_lgGeoCache[ip])+'</td>';
         h2+='<td><span style="color:'+color+';font-weight:bold">'+count+' / '+threshold+'</span></td>';
         h2+='<td>'+lgEscHtml(lastSeen)+'</td>';
@@ -385,11 +405,12 @@ function lgApplyStatus(d){
             listEl.innerHTML='<div class="lg-empty">暂无封禁</div>';
         }else{
             var h='<table class="lg-table lg-table-ban">';
-            h+='<thead><tr><th>IP 地址</th><th>归属地</th><th>剩余时间</th><th>操作</th></tr></thead><tbody>';
+            h+='<thead><tr><th>IP 地址</th><th>访问类型</th><th>归属地</th><th>剩余时间</th><th>操作</th></tr></thead><tbody>';
             for(var i=0;i<banned.length;i++){
                 var b=banned[i];
                 h+='<tr>';
                 h+='<td><code class="lg-ip lg-ip-danger">'+lgEscHtml(b.ip)+'</code></td>';
+                h+='<td>'+lgKindHtml(b.kind)+'</td>';
                 h+='<td id="lg-geo-'+i+'">'+lgGeoHtml(_lgGeoCache[b.ip])+'</td>';
                 h+='<td>'+fmtDuration(b.remaining)+'</td>';
                 h+='<td><button class="lg-unban" onclick="lgUnban(\''+lgEscHtml(b.ip)+'\',this)">解封</button></td>';

@@ -208,3 +208,27 @@ test('LuCI forms validate domains, Cloudflare IDs, intervals, thresholds and whi
         'range(1,100)\ttrue\tfalse\tfalse'
     ].join('\n'));
 });
+
+test('login guard status adds the access type from the persisted ban list and counters', { skip: !lua }, () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'minigate-lg-status-'));
+    fs.writeFileSync(path.join(dir, 'bans.txt'), '103.160.205.37 1795830696 ssh\n5.231.242.181 1795794101\n');
+    const prelude = controllerPrelude.replace("get=function(_, _, sec) if sec == 'cfg01' then return 'ddns' end end",
+        "get=function(_, _, sec) local v; if sec == 'cfg01' then v = 'ddns' end; return v end");
+    assert.notEqual(prelude, controllerPrelude);
+    const out = runLua(prelude.replace("exec=function() return '' end", `exec=function(cmd)
+            if cmd:find('login_banned_v4', 1, true) then
+                return '{"nftables": [{"set": {"elem": [{"elem": {"val": "103.160.205.37", "timeout": 2592000, "expires": 3600}}, {"elem": {"val": "5.231.242.181", "timeout": 2592000, "expires": 60}}]}}]}'
+            end
+            return ''
+        end`) + `
+        local real_open = io.open
+        io.open = function(file, mode)
+            if file == '/etc/minigate/login-guard/bans.txt' then file = ${JSON.stringify(path.join(dir, 'bans.txt'))} end
+            return real_open(file, mode)
+        end
+        package.loaded['nixio.fs'] = {dir=function() return nil end, stat=function() return nil end}
+        c.action_lg_status()
+        for _, b in ipairs(response.banned) do print(b.ip, b.remaining, b.kind == '' and '(none)' or b.kind) end
+    `);
+    assert.equal(out, '103.160.205.37\t3600\tssh\n5.231.242.181\t60\t(none)');
+});

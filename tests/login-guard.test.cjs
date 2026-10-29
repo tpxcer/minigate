@@ -213,3 +213,63 @@ test('reaching the threshold bans the attacking address even when other bans are
         assert.equal(fs.existsSync(path.join(dir, 'run/counters/139.162.161.162')), false, 'counter is cleared after a ban');
     }
 });
+
+function guardLibrary(dir, body) {
+    return spawnSync('/bin/sh', ['-c', `
+        logger() { :; }
+        uci() { case "$3" in minigate.login_guard.threshold) echo 3 ;; *) return 1 ;; esac; }
+        nft() {
+            printf '%s\\n' "$*" >> ${JSON.stringify(path.join(dir, 'nft.log'))}
+            case "$*" in
+                'list set inet fw4 login_banned_v4'|'list set inet fw4 login_banned_v6') [ -f ${JSON.stringify(path.join(dir, 'sets-empty'))} ] || echo 'elements = { 1.1.1.1 }' ;;
+                'list chain inet fw4 input') echo '@login_banned_v4 @login_banned_v6' ;;
+            esac
+            return 0
+        }
+        export MINIGATE_LG_LIBRARY_ONLY=1 MINIGATE_LG_DATA_DIR=${JSON.stringify(path.join(dir, 'data'))}
+        export MINIGATE_LG_RUN_DIR=${JSON.stringify(path.join(dir, 'run'))} MINIGATE_LG_LOG=${JSON.stringify(path.join(dir, 'lg.log'))}
+        . ${JSON.stringify(script)}
+        ${body}
+    `], { encoding: 'utf8' });
+}
+
+test('bans and failure counters record whether the attempt came over SSH or LuCI', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'minigate-lg-kind-'));
+    fs.mkdirSync(path.join(dir, 'data'));
+    fs.writeFileSync(path.join(dir, 'data/bans.txt'), '111.170.34.182 9999999999\n');
+    const result = guardLibrary(dir, `
+        handle_failure 198.51.100.30 luci
+        cat "$COUNTER_DIR/198.51.100.30"
+        for i in 1 2 3; do handle_failure 139.162.161.162 ssh; done
+        cmd_ban 198.51.100.40 >/dev/null
+    `);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /^\d+ 1 luci$/m);
+    const bans = fs.readFileSync(path.join(dir, 'data/bans.txt'), 'utf8');
+    assert.match(bans, /^111\.170\.34\.182 9999999999$/m, 'old records without a type are kept as they are');
+    assert.match(bans, /^139\.162\.161\.162 \d+ ssh$/m);
+    assert.match(bans, /^198\.51\.100\.40 \d+ manual$/m);
+    const log = fs.readFileSync(path.join(dir, 'lg.log'), 'utf8');
+    assert.match(log, /FAIL 198\.51\.100\.30 LuCI \(1\/3\)/);
+    assert.match(log, /BAN 139\.162\.161\.162 12小时（SSH，达到 3 次失败）/);
+});
+
+test('typed ban records survive a firewall reload and are restored with their type', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'minigate-lg-kind-restore-'));
+    fs.mkdirSync(path.join(dir, 'data'));
+    fs.writeFileSync(path.join(dir, 'sets-empty'), '');
+    fs.writeFileSync(path.join(dir, 'data/bans.txt'), '139.162.161.162 9999999999 ssh\n2001:db8::9 9999999999 luci\n5.231.242.181 9999999999\n');
+    const result = guardLibrary(dir, 'repair_nft');
+    assert.equal(result.status, 0, result.stderr);
+    const calls = fs.readFileSync(path.join(dir, 'nft.log'), 'utf8');
+    assert.match(calls, /add element inet fw4 login_banned_v4 \{ 139\.162\.161\.162 timeout \d+s \}/);
+    assert.match(calls, /add element inet fw4 login_banned_v6 \{ 2001:db8::9 timeout \d+s \}/);
+    assert.equal(fs.readFileSync(path.join(dir, 'data/bans.txt'), 'utf8'), '139.162.161.162 9999999999 ssh\n2001:db8::9 9999999999 luci\n5.231.242.181 9999999999\n');
+});
+
+test('each log source reports its own access type', () => {
+    const source = fs.readFileSync(script, 'utf8');
+    assert.match(source, /handle_failure "\$\(extract_ip "\$line" 1\)" ssh/);
+    assert.match(source, /handle_failure "\$\(extract_ip "\$line" 0\)" luci/);
+    assert.match(source, /handle_failure "\$ip" luci/);
+});

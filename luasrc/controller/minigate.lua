@@ -740,6 +740,19 @@ local function valid_ban_ip(ip)
     return #ip <= 39 and ip:match("^[%x:]+$") ~= nil and select(2, ip:gsub(":", "")) >= 2
 end
 
+-- bans.txt 每行「IP 到期时间 [访问类型]」；旧版记录没有类型
+local function ban_kinds()
+    local kinds = {}
+    local file = io.open("/etc/minigate/login-guard/bans.txt", "r")
+    if not file then return kinds end
+    for line in file:lines() do
+        local ip, kind = line:match("^(%S+)%s+%d+%s+(%a+)")
+        if ip then kinds[ip] = kind end
+    end
+    file:close()
+    return kinds
+end
+
 local function parse_ban_set(raw, banned)
     -- nft -j 在 key 和 value 之间有空格，要用 %s* 匹配；按 elem 块配对 val 与 expires
     for block in raw:gmatch('{[^{}]-"val"%s*:%s*"[^"]+"[^{}]-}') do
@@ -775,6 +788,8 @@ function action_lg_status()
     local banned = {}
     parse_ban_set(sys.exec("nft -j list set inet fw4 login_banned_v4 2>/dev/null") or "", banned)
     parse_ban_set(sys.exec("nft -j list set inet fw4 login_banned_v6 2>/dev/null") or "", banned)
+    local kinds = ban_kinds()
+    for _, item in ipairs(banned) do item.kind = kinds[item.ip] or "" end
     -- 按剩余时间倒序
     table.sort(banned, function(a,b) return a.remaining > b.remaining end)
     local banned_total = #banned
@@ -794,7 +809,7 @@ function action_lg_status()
             if fh then
                 local line = fh:read("*l") or ""
                 fh:close()
-                local first, count = line:match("(%d+)%s+(%d+)")
+                local first, count, kind = line:match("^(%d+)%s+(%d+)%s*(%a*)")
                 if first and count then
                     local first_time = tonumber(first)
                     local stat = fs.stat(path)
@@ -803,6 +818,7 @@ function action_lg_status()
                     if age <= window_s then
                         watching[#watching+1] = {
                             ip = ip,
+                            kind = kind,
                             count = tonumber(count),
                             age = age,
                             first_time = first_time,

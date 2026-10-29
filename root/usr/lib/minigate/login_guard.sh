@@ -209,11 +209,11 @@ ensure_nft() {
 # 防火墙重载后，随包的集合会重新出现但内容为空；持久化文件里仍有未过期封禁时恢复
 sets_lost_bans() {
     # ip/exp 必须是局部变量：shell 的 local 是动态作用域，读到文件末尾会清空调用方的 ip
-    local now set ip exp
+    local now set ip exp kind
     now=$(date +%s)
     for set in "$SET4" "$SET6"; do
         nft list set $TABLE $set 2>/dev/null | grep -q 'elements' && continue
-        while read -r ip exp; do
+        while read -r ip exp kind; do
             [ -n "$ip" ] || continue
             case "$exp" in ''|*[!0-9]*) continue ;; esac
             [ "$exp" -gt "$now" ] || continue
@@ -230,23 +230,32 @@ add_ban_element() {
     nft add element $TABLE $set "{ $ip timeout ${seconds}s }" 2>/dev/null
 }
 
+# 访问类型：ssh / luci / manual。bans.txt 每行「IP 到期时间 类型」，旧版没有第三列
+kind_label() {
+    case "$1" in
+        ssh) echo "SSH" ;;
+        luci) echo "LuCI" ;;
+        manual) echo "手动" ;;
+    esac
+}
+
 persist_ban() {
-    local ip="$1" exp="$2"
+    local ip="$1" exp="$2" kind="$3"
     grep -v "^$ip " "$BANS_FILE" > "${BANS_FILE}.tmp" 2>/dev/null || true
-    echo "$ip $exp" >> "${BANS_FILE}.tmp"
+    echo "$ip $exp${kind:+ $kind}" >> "${BANS_FILE}.tmp"
     mv "${BANS_FILE}.tmp" "$BANS_FILE"
 }
 
 # === 把 IP 加入封禁集合 + 持久化 ===
 ban_ip() {
-    local ip="$1"
+    local ip="$1" kind="$2"
     local exp=$(($(date +%s) + BANTIME))
     if ! add_ban_element "$ip" "$BANTIME"; then
         log "封禁 $ip 失败：防火墙未接受该地址"
         return 1
     fi
-    persist_ban "$ip" "$exp"
-    log "BAN $ip $(fmt_duration "$BANTIME")（达到 $THRESHOLD 次失败）"
+    persist_ban "$ip" "$exp" "$kind"
+    log "BAN $ip $(fmt_duration "$BANTIME")（${kind:+$(kind_label "$kind")，}达到 $THRESHOLD 次失败）"
     rm -f "$COUNTER_DIR/$ip"
 }
 
@@ -256,13 +265,13 @@ restore_bans() {
     local now=$(date +%s)
     local tmp="${BANS_FILE}.tmp"
     > "$tmp"
-    local count=0 ip exp
-    while read -r ip exp; do
+    local count=0 ip exp kind
+    while read -r ip exp kind; do
         [ -z "$ip" ] && continue
         case "$exp" in ''|*[!0-9]*) continue ;; esac
         if [ "$exp" -gt "$now" ] && [ -n "$(set_for_ip "$ip")" ]; then
             add_ban_element "$ip" $((exp - now))
-            echo "$ip $exp" >> "$tmp"
+            echo "$ip $exp${kind:+ $kind}" >> "$tmp"
             count=$((count + 1))
         fi
     done < "$BANS_FILE"
@@ -272,7 +281,7 @@ restore_bans() {
 
 # === 处理一条登录失败 ===
 handle_failure() {
-    local ip="$1"
+    local ip="$1" kind="$2"
     [ -z "$ip" ] && return
     [ -n "$(ip_family "$ip")" ] || return
     is_whitelisted "$ip" && return
@@ -282,8 +291,9 @@ handle_failure() {
     local now=$(date +%s)
     local first=0
     local count=0
+    local last_kind
     if [ -f "$f" ]; then
-        read -r first count < "$f"
+        read -r first count last_kind < "$f"
         if [ -n "$first" ] && [ $((now - first)) -gt "$WINDOW" ]; then
             first=$now
             count=0
@@ -292,13 +302,14 @@ handle_failure() {
         first=$now
     fi
     count=$((count + 1))
-    echo "$first $count" > "$f"
-    log "FAIL $ip ($count/$THRESHOLD)"
+    # 计数文件第三列记录最近一次失败的访问类型
+    echo "$first $count${kind:+ $kind}" > "$f"
+    log "FAIL $ip ${kind:+$(kind_label "$kind") }($count/$THRESHOLD)"
 
     if [ "$count" -ge "$THRESHOLD" ]; then
         # 加 ban 前再确认 nft 还在（fw4 可能重载）
         repair_nft
-        ban_ip "$ip"
+        ban_ip "$ip" "$kind"
     fi
 }
 
@@ -335,7 +346,7 @@ access_log_loop() {
     tail -n 0 -f "$ACCESS_LOG" 2>/dev/null | while read -r line; do
         is_luci_failed_post "$line" || continue
         ip=$(echo "$line" | extract_json_field client)
-        handle_failure "$ip"
+        handle_failure "$ip" luci
     done
 }
 
@@ -344,10 +355,10 @@ syslog_loop() {
         case "$line" in
             *"Bad password attempt"*"from"*|\
             *"Login attempt for nonexistent user"*"from"*)
-                handle_failure "$(extract_ip "$line" 1)"
+                handle_failure "$(extract_ip "$line" 1)" ssh
                 ;;
             *"luci: failed login"*"from"*)
-                handle_failure "$(extract_ip "$line" 0)"
+                handle_failure "$(extract_ip "$line" 0)" luci
                 ;;
         esac
     done
@@ -509,7 +520,7 @@ cmd_ban() {
         echo "✗ 封禁 $ip 失败"
         exit 1
     fi
-    persist_ban "$ip" $(($(date +%s) + BANTIME))
+    persist_ban "$ip" $(($(date +%s) + BANTIME)) manual
     echo "✓ 已封禁 $ip"
     log "MANUAL ban $ip"
 }
